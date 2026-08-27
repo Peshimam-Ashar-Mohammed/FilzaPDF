@@ -24,3 +24,7 @@ Under active development.
 - Gradle
 - Apache PDFBox
 - JUnit 5
+
+
+gradlew.bat build
+gradlew.bat run
