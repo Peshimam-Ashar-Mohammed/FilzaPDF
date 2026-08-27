@@ -1,0 +1,15 @@
+(
+echo .gradle/
+echo build/
+echo.
+echo .idea/
+echo *.iml
+echo.
+echo .vscode/
+echo.
+echo *.class
+echo *.log
+echo.
+echo .DS_Store
+echo Thumbs.db
+) > .gitignore

@@ -1,0 +1,1 @@
+echo rootProject.name = 'FilzaPDF' > settings.gradle
