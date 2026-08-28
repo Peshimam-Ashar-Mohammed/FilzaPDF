@@ -1,10 +1,10 @@
 package com.filzapdf.renderer;
 
-import org.apache.pdfbox.pdmodel.PDDocument;
-import org.apache.pdfbox.rendering.PDFRenderer;
-
 import java.awt.image.BufferedImage;
 import java.io.IOException;
+
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.rendering.PDFRenderer;
 
 public class PdfPageRenderer {
 
@@ -14,7 +14,8 @@ public class PdfPageRenderer {
         this.renderer = new PDFRenderer(document);
     }
 
-    public BufferedImage renderPage(int pageIndex) throws IOException {
-        return renderer.renderImageWithDPI(pageIndex, 120);
+    public BufferedImage renderPage(int pageIndex, float dpi)
+            throws IOException {
+        return renderer.renderImageWithDPI(pageIndex, dpi);
     }
 }
