@@ -1,0 +1,49 @@
+.root {
+    -fx-background-color: #f0f0f0;
+    -fx-font-family: "Segoe UI", "System", sans-serif;
+    -fx-font-size: 13px;
+}
+
+.menu-bar {
+    -fx-background-color: #e8e8e8;
+}
+
+.tool-bar, .hbox {
+    -fx-background-color: #e8e8e8;
+}
+
+.scroll-pane, .scroll-pane > .viewport {
+    -fx-background-color: #d8d8d8;
+}
+
+.button {
+    -fx-background-color: #dcdcdc;
+    -fx-text-fill: #1a1a1a;
+    -fx-border-radius: 3;
+    -fx-background-radius: 3;
+}
+
+.button:hover {
+    -fx-background-color: #c8c8c8;
+}
+
+.text-field {
+    -fx-background-color: white;
+    -fx-border-color: #b0b0b0;
+    -fx-border-radius: 2;
+    -fx-background-radius: 2;
+}
+
+.label {
+    -fx-text-fill: #1a1a1a;
+}
+
+.tab-pane {
+    -fx-background-color: #e8e8e8;
+}
+
+.status-bar {
+    -fx-background-color: #e0e0e0;
+    -fx-border-color: #c0c0c0;
+    -fx-border-width: 1 0 0 0;
+}

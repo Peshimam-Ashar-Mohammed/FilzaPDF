@@ -3,894 +3,941 @@ package com.filzapdf.app;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
-import java.util.ArrayList;
 import java.util.List;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+import java.util.concurrent.Future;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
 
+import com.filzapdf.annotations.AddAnnotationCommand;
+import com.filzapdf.annotations.Annotation;
+import com.filzapdf.annotations.AnnotationManager;
+import com.filzapdf.annotations.AnnotationType;
+import com.filzapdf.pdf.BookmarkNode;
+import com.filzapdf.pdf.BookmarkService;
 import com.filzapdf.pdf.PdfDocumentService;
+import com.filzapdf.persistence.RecentFilesService;
+import com.filzapdf.persistence.ViewerPreferences;
+import com.filzapdf.search.PdfTextSearchService;
+import com.filzapdf.search.SearchResult;
 import com.filzapdf.ui.PdfViewerController;
 import com.filzapdf.ui.PdfViewerModel;
+import com.filzapdf.ui.ThemeService;
 
 import javafx.application.Application;
+import javafx.application.Platform;
 import javafx.embed.swing.SwingFXUtils;
+import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
+import javafx.scene.control.Alert;
+import javafx.scene.control.Alert.AlertType;
 import javafx.scene.control.Button;
+import javafx.scene.control.ButtonType;
+import javafx.scene.control.CheckBox;
+import javafx.scene.control.CheckMenuItem;
 import javafx.scene.control.Label;
+import javafx.scene.control.Menu;
+import javafx.scene.control.MenuBar;
+import javafx.scene.control.MenuItem;
 import javafx.scene.control.ScrollPane;
+import javafx.scene.control.Separator;
+import javafx.scene.control.SeparatorMenuItem;
+import javafx.scene.control.Tab;
+import javafx.scene.control.TabPane;
 import javafx.scene.control.TextField;
+import javafx.scene.control.Tooltip;
+import javafx.scene.control.TreeItem;
+import javafx.scene.control.TreeView;
 import javafx.scene.image.ImageView;
+import javafx.scene.input.DragEvent;
+import javafx.scene.input.Dragboard;
+import javafx.scene.input.KeyCode;
+import javafx.scene.input.KeyCodeCombination;
+import javafx.scene.input.KeyCombination;
+import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
 import javafx.scene.layout.HBox;
+import javafx.scene.layout.Priority;
+import javafx.scene.layout.Region;
 import javafx.scene.layout.VBox;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
+/**
+ * FilzaPDF main application.
+ *
+ * Owns the Stage, Scene, MenuBar, toolbar, sidebar, status bar,
+ * and delegates document/rendering work to PdfViewerController
+ * and the service layer (search, annotations, persistence, bookmarks).
+ */
 public class FilzaPdfApplication extends Application {
 
-    private final PdfDocumentService pdfDocumentService =
-            new PdfDocumentService();
+    // ── Services ────────────────────────────────────────────────────────────
+    private final PdfDocumentService   pdfDocumentService  = new PdfDocumentService();
+    private final RecentFilesService   recentFilesService  = new RecentFilesService();
+    private final ViewerPreferences    viewerPreferences   = new ViewerPreferences();
+    private final PdfTextSearchService searchService       = new PdfTextSearchService();
+    private final BookmarkService      bookmarkService     = new BookmarkService();
+    private final AnnotationManager    annotationManager   = new AnnotationManager();
+    private       ThemeService         themeService;
 
-    private final PdfViewerController controller =
-            new PdfViewerController();
+    // ── Controller ──────────────────────────────────────────────────────────
+    private PdfViewerController controller;
 
-    private Label pageLabel;
-    private Label zoomLabel;
+    // ── State ────────────────────────────────────────────────────────────────
+    private File    currentFile;
+    private Stage   primaryStage;
 
-    private Button previousButton;
-    private Button nextButton;
-    private Button zoomOutButton;
-    private Button zoomInButton;
-    private Button fitWidthButton;
-    private Button fitPageButton;
-    private Button resetZoomButton;
-
+    // ── Toolbar controls ────────────────────────────────────────────────────
+    private Button    previousButton;
+    private Button    nextButton;
+    private Button    zoomOutButton;
+    private Button    zoomInButton;
+    private Button    fitWidthButton;
+    private Button    fitPageButton;
+    private Button    resetZoomButton;
+    private Button    undoButton;
+    private Button    redoButton;
     private TextField pageField;
+    private Label     pageLabel;
+    private Label     zoomLabel;
 
-    private ScrollPane scrollPane;
-    private VBox pageContainer;
-    private VBox thumbnailContainer;
+    // ── Search bar ──────────────────────────────────────────────────────────
+    private HBox      searchBar;
+    private TextField searchField;
+    private Label     searchResultLabel;
+    private CheckBox  caseSensitiveCheck;
+    private List<SearchResult> lastSearchResults;
 
-    private final List<ImageView> pageViews =
-            new ArrayList<>();
+    // ── Status bar ──────────────────────────────────────────────────────────
+    private Label statusPageLabel;
+    private Label statusZoomLabel;
+    private Label statusDocLabel;
+
+    // ── Sidebar ─────────────────────────────────────────────────────────────
+    private VBox     thumbnailContainer;
+    private TreeView<String> bookmarkTree;
+
+    // ── Thumbnail background loading ─────────────────────────────────────────
+    private final ExecutorService thumbnailExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "thumbnail-loader");
+        t.setDaemon(true);
+        return t;
+    });
+    private Future<?> thumbnailTask;
+
+    // ── Menus that need dynamic update ───────────────────────────────────────
+    private Menu recentFilesMenu;
+
+    // ─────────────────────────────────────────────────────────────────────────
 
     @Override
     public void start(Stage stage) {
+        this.primaryStage = stage;
+        this.themeService  = new ThemeService(viewerPreferences);
+        this.controller    = new PdfViewerController(stage);
 
-        Button openButton =
-                new Button("Open PDF");
+        controller.setOnPageChanged(this::onPageChanged);
+        annotationManager.setOnAnnotationsChanged(this::onAnnotationsChanged);
 
-        previousButton =
-                new Button("Previous");
+        BorderPane root = buildRoot();
 
-        nextButton =
-                new Button("Next");
-
-        zoomOutButton =
-                new Button("-");
-
-        zoomInButton =
-                new Button("+");
-
-        fitWidthButton =
-                new Button("Fit Width");
-
-        fitPageButton =
-                new Button("Fit Page");
-
-        resetZoomButton =
-                new Button("100%");
-
-        pageField =
-                new TextField();
-
-        pageField.setPrefWidth(60);
-        pageField.setPromptText("Page");
-        pageField.setFocusTraversable(false);
-
-        pageLabel =
-                new Label("of");
-
-        zoomLabel =
-                new Label("100%");
-
-        pageContainer =
-                new VBox(20);
-
-        pageContainer.setAlignment(
-                Pos.TOP_CENTER
-        );
-        pageContainer.setFocusTraversable(false);
-
-        scrollPane =
-                new ScrollPane(pageContainer);
-
-        scrollPane.setPannable(true);
-        scrollPane.setFitToWidth(true);
-        scrollPane.setFocusTraversable(false);
-
-        thumbnailContainer =
-                new VBox(10);
-
-        thumbnailContainer.setAlignment(
-                Pos.TOP_CENTER
-        );
-
-        thumbnailContainer.setPrefWidth(150);
-        thumbnailContainer.setFocusTraversable(false);
-
-        ScrollPane thumbnailScrollPane =
-                new ScrollPane(thumbnailContainer);
-
-        thumbnailScrollPane.setFitToWidth(true);
-        thumbnailScrollPane.setFocusTraversable(false);
-
-        scrollPane.vvalueProperty().addListener(
-                (observable, oldValue, newValue) ->
-                        updateCurrentPageFromScroll()
-        );
-
-        openButton.setOnAction(
-                event -> openPdf(stage)
-        );
-
-        previousButton.setOnAction(
-                event -> showPreviousPage()
-        );
-
-        nextButton.setOnAction(
-                event -> showNextPage()
-        );
-
-        zoomOutButton.setOnAction(
-                event -> zoomOut()
-        );
-
-        zoomInButton.setOnAction(
-                event -> zoomIn()
-        );
-
-        fitWidthButton.setOnAction(
-                event -> fitWidth()
-        );
-
-        fitPageButton.setOnAction(
-                event -> fitPage()
-        );
-
-        resetZoomButton.setOnAction(
-                event -> resetZoom()
-        );
-
-        pageField.setOnAction(
-                event -> jumpToPage()
-        );
-
-        setViewerControlsEnabled(false);
-
-        HBox toolbar =
-                new HBox(
-                        10,
-                        openButton,
-                        previousButton,
-                        nextButton,
-                        pageField,
-                        pageLabel,
-                        zoomOutButton,
-                        zoomLabel,
-                        zoomInButton,
-                        fitWidthButton,
-                        fitPageButton,
-                        resetZoomButton
-                );
-
-        toolbar.setAlignment(
-                Pos.CENTER
-        );
-        toolbar.setFocusTraversable(false);
-
-        BorderPane root =
-                new BorderPane();
-
-        root.setTop(toolbar);
-        root.setLeft(thumbnailScrollPane);
-        root.setCenter(scrollPane);
-
-        Scene scene =
-                new Scene(
-                        root,
-                        1200,
-                        700
-                );
-
-        // Use Scene-level key handler for better event capture
-        scene.setOnKeyPressed(event -> {
-
-            if (!controller.hasDocument()) {
-                return;
-            }
-
-            switch (event.getCode()) {
-                case RIGHT:
-                    showNextPage();
-                    event.consume();
-                    break;
-                case LEFT:
-                    showPreviousPage();
-                    event.consume();
-                    break;
-                case PLUS:
-                case EQUALS:
-                case ADD:
-                    zoomIn();
-                    event.consume();
-                    break;
-                case MINUS:
-                case SUBTRACT:
-                    zoomOut();
-                    event.consume();
-                    break;
-                case DIGIT0:
-                case NUMPAD0:
-                    if (event.isControlDown()) {
-                        resetZoom();
-                        event.consume();
-                    }
-                    break;
-                case W:
-                    fitWidth();
-                    event.consume();
-                    break;
-                case P:
-                    fitPage();
-                    event.consume();
-                    break;
-                default:
-                    break;
-            }
-        });
+        Scene scene = new Scene(root, 1280, 760);
+        themeService.setScene(scene);
+        controller.installKeyboardShortcuts(scene);
+        installAppKeyboardShortcuts(scene);
+        installDragAndDrop(scene);
 
         stage.setTitle("FilzaPDF");
         stage.setScene(scene);
         stage.show();
 
-        // Request focus to ensure keyboard events are captured
+        setViewerControlsEnabled(false);
         root.requestFocus();
     }
 
-    private void openPdf(Stage stage) {
+    @Override
+    public void stop() {
+        saveCurrentFileState();
+        if (controller != null)  controller.shutdown();
+        if (searchService != null) searchService.shutdown();
+        thumbnailExecutor.shutdownNow();
+    }
 
-        FileChooser fileChooser =
-                new FileChooser();
+    // ── Build scene graph ────────────────────────────────────────────────────
 
-        fileChooser.setTitle(
-                "Open PDF"
+    private BorderPane buildRoot() {
+        BorderPane root = new BorderPane();
+        root.setTop(buildTopSection());
+        root.setLeft(buildSidebar());
+        root.setCenter(controller.getRoot());
+        root.setBottom(buildStatusBar());
+        return root;
+    }
+
+    private VBox buildTopSection() {
+        VBox top = new VBox();
+        top.getChildren().addAll(buildMenuBar(), buildToolbar(), buildSearchBar());
+        return top;
+    }
+
+    // ── MenuBar ──────────────────────────────────────────────────────────────
+
+    private MenuBar buildMenuBar() {
+        MenuBar menuBar = new MenuBar();
+        menuBar.getMenus().addAll(
+            buildFileMenu(),
+            buildEditMenu(),
+            buildViewMenu(),
+            buildNavigateMenu(),
+            buildHelpMenu()
         );
+        return menuBar;
+    }
 
-        fileChooser.getExtensionFilters().add(
-                new FileChooser.ExtensionFilter(
-                        "PDF Files",
-                        "*.pdf"
-                )
+    private Menu buildFileMenu() {
+        Menu file = new Menu("_File");
+
+        MenuItem open   = new MenuItem("Open…");
+        open.setAccelerator(new KeyCodeCombination(KeyCode.O, KeyCombination.CONTROL_DOWN));
+        open.setOnAction(e -> openPdfDialog());
+
+        recentFilesMenu = new Menu("Open Recent");
+        refreshRecentFilesMenu();
+
+        MenuItem close  = new MenuItem("Close");
+        close.setOnAction(e -> closeDocument());
+
+        MenuItem props  = new MenuItem("Document Properties…");
+        props.setOnAction(e -> showDocumentProperties());
+
+        MenuItem quit   = new MenuItem("Quit");
+        quit.setAccelerator(new KeyCodeCombination(KeyCode.Q, KeyCombination.CONTROL_DOWN));
+        quit.setOnAction(e -> primaryStage.close());
+
+        file.getItems().addAll(open, recentFilesMenu, close,
+                new SeparatorMenuItem(), props,
+                new SeparatorMenuItem(), quit);
+        return file;
+    }
+
+    private Menu buildEditMenu() {
+        Menu edit = new Menu("_Edit");
+
+        MenuItem undo = new MenuItem("Undo");
+        undo.setAccelerator(new KeyCodeCombination(KeyCode.Z, KeyCombination.CONTROL_DOWN));
+        undo.setOnAction(e -> { annotationManager.undo(); refreshAnnotationButtons(); });
+
+        MenuItem redo = new MenuItem("Redo");
+        redo.setAccelerator(new KeyCodeCombination(KeyCode.Y, KeyCombination.CONTROL_DOWN));
+        redo.setOnAction(e -> { annotationManager.redo(); refreshAnnotationButtons(); });
+
+        MenuItem find = new MenuItem("Find…");
+        find.setAccelerator(new KeyCodeCombination(KeyCode.F, KeyCombination.CONTROL_DOWN));
+        find.setOnAction(e -> showSearchBar());
+
+        edit.getItems().addAll(undo, redo, new SeparatorMenuItem(), find);
+        return edit;
+    }
+
+    private Menu buildViewMenu() {
+        Menu view = new Menu("_View");
+
+        MenuItem zoomIn = new MenuItem("Zoom In");
+        zoomIn.setAccelerator(new KeyCodeCombination(KeyCode.EQUALS, KeyCombination.CONTROL_DOWN));
+        zoomIn.setOnAction(e -> controller.zoomIn());
+
+        MenuItem zoomOut = new MenuItem("Zoom Out");
+        zoomOut.setAccelerator(new KeyCodeCombination(KeyCode.MINUS, KeyCombination.CONTROL_DOWN));
+        zoomOut.setOnAction(e -> controller.zoomOut());
+
+        MenuItem resetZoom = new MenuItem("Reset Zoom");
+        resetZoom.setAccelerator(new KeyCodeCombination(KeyCode.DIGIT0, KeyCombination.CONTROL_DOWN));
+        resetZoom.setOnAction(e -> controller.resetZoom());
+
+        MenuItem fitWidth = new MenuItem("Fit Width");
+        fitWidth.setOnAction(e -> controller.setFitWidth());
+
+        MenuItem fitPage = new MenuItem("Fit Page");
+        fitPage.setOnAction(e -> controller.setFitPage());
+
+        CheckMenuItem darkTheme = new CheckMenuItem("Dark Theme");
+        darkTheme.setSelected("dark".equals(viewerPreferences.getTheme()));
+        darkTheme.setOnAction(e -> {
+            themeService.applyTheme(darkTheme.isSelected() ? "dark" : "light");
+        });
+
+        MenuItem fullscreen = new MenuItem("Fullscreen");
+        fullscreen.setAccelerator(new KeyCodeCombination(KeyCode.F11));
+        fullscreen.setOnAction(e -> primaryStage.setFullScreen(!primaryStage.isFullScreen()));
+
+        view.getItems().addAll(zoomIn, zoomOut, resetZoom, new SeparatorMenuItem(),
+                fitWidth, fitPage, new SeparatorMenuItem(),
+                darkTheme, new SeparatorMenuItem(), fullscreen);
+        return view;
+    }
+
+    private Menu buildNavigateMenu() {
+        Menu nav = new Menu("_Navigate");
+
+        MenuItem first = new MenuItem("First Page");
+        first.setOnAction(e -> goToPage(0));
+
+        MenuItem prev = new MenuItem("Previous Page");
+        prev.setAccelerator(new KeyCodeCombination(KeyCode.LEFT));
+        prev.setOnAction(e -> controller.previousPage());
+
+        MenuItem next = new MenuItem("Next Page");
+        next.setAccelerator(new KeyCodeCombination(KeyCode.RIGHT));
+        next.setOnAction(e -> controller.nextPage());
+
+        MenuItem last = new MenuItem("Last Page");
+        last.setOnAction(e -> {
+            if (controller.hasDocument())
+                goToPage(controller.getModel().getPageCount() - 1);
+        });
+
+        MenuItem goTo = new MenuItem("Go to Page…");
+        goTo.setAccelerator(new KeyCodeCombination(KeyCode.G, KeyCombination.CONTROL_DOWN));
+        goTo.setOnAction(e -> pageField.requestFocus());
+
+        nav.getItems().addAll(first, prev, next, last, new SeparatorMenuItem(), goTo);
+        return nav;
+    }
+
+    private Menu buildHelpMenu() {
+        Menu help = new Menu("_Help");
+        MenuItem about = new MenuItem("About FilzaPDF");
+        about.setOnAction(e -> showAboutDialog());
+        help.getItems().add(about);
+        return help;
+    }
+
+    // ── Toolbar ──────────────────────────────────────────────────────────────
+
+    private HBox buildToolbar() {
+        Button openButton   = new Button("Open");
+        openButton.setTooltip(new Tooltip("Open PDF (Ctrl+O)"));
+        openButton.setOnAction(e -> openPdfDialog());
+
+        previousButton = new Button("◀");
+        previousButton.setTooltip(new Tooltip("Previous Page (←)"));
+        previousButton.setOnAction(e -> controller.previousPage());
+
+        nextButton = new Button("▶");
+        nextButton.setTooltip(new Tooltip("Next Page (→)"));
+        nextButton.setOnAction(e -> controller.nextPage());
+
+        pageField = new TextField();
+        pageField.setPrefWidth(52);
+        pageField.setPromptText("Page");
+        pageField.setFocusTraversable(false);
+        pageField.setOnAction(e -> jumpToPage());
+
+        pageLabel = new Label("of 0");
+
+        zoomOutButton = new Button("−");
+        zoomOutButton.setTooltip(new Tooltip("Zoom Out (-)"));
+        zoomOutButton.setOnAction(e -> controller.zoomOut());
+
+        zoomLabel = new Label("100%");
+        zoomLabel.setMinWidth(46);
+        zoomLabel.setAlignment(Pos.CENTER);
+
+        zoomInButton = new Button("+");
+        zoomInButton.setTooltip(new Tooltip("Zoom In (+)"));
+        zoomInButton.setOnAction(e -> controller.zoomIn());
+
+        fitWidthButton = new Button("Fit W");
+        fitWidthButton.setTooltip(new Tooltip("Fit Width (W)"));
+        fitWidthButton.setOnAction(e -> controller.setFitWidth());
+
+        fitPageButton = new Button("Fit P");
+        fitPageButton.setTooltip(new Tooltip("Fit Page (P)"));
+        fitPageButton.setOnAction(e -> controller.setFitPage());
+
+        resetZoomButton = new Button("100%");
+        resetZoomButton.setTooltip(new Tooltip("Reset Zoom (Ctrl+0)"));
+        resetZoomButton.setOnAction(e -> controller.resetZoom());
+
+        undoButton = new Button("↩");
+        undoButton.setTooltip(new Tooltip("Undo Annotation (Ctrl+Z)"));
+        undoButton.setOnAction(e -> { annotationManager.undo(); refreshAnnotationButtons(); });
+
+        redoButton = new Button("↪");
+        redoButton.setTooltip(new Tooltip("Redo Annotation (Ctrl+Y)"));
+        redoButton.setOnAction(e -> { annotationManager.redo(); refreshAnnotationButtons(); });
+
+        HBox toolbar = new HBox(6,
+            openButton,
+            new Separator(javafx.geometry.Orientation.VERTICAL),
+            previousButton, nextButton,
+            pageField, pageLabel,
+            new Separator(javafx.geometry.Orientation.VERTICAL),
+            zoomOutButton, zoomLabel, zoomInButton,
+            fitWidthButton, fitPageButton, resetZoomButton,
+            new Separator(javafx.geometry.Orientation.VERTICAL),
+            undoButton, redoButton
         );
+        toolbar.setAlignment(Pos.CENTER_LEFT);
+        toolbar.setPadding(new Insets(4, 8, 4, 8));
 
-        File file =
-                fileChooser.showOpenDialog(stage);
+        setViewerControlsEnabled(false);
+        return toolbar;
+    }
 
-        if (file == null) {
+    // ── Search bar ───────────────────────────────────────────────────────────
+
+    private HBox buildSearchBar() {
+        searchField = new TextField();
+        searchField.setPromptText("Search…");
+        searchField.setPrefWidth(220);
+        searchField.setOnAction(e -> performSearch());
+
+        Button searchNext = new Button("▼");
+        searchNext.setTooltip(new Tooltip("Next Result"));
+        searchNext.setOnAction(e -> navigateSearchResult(true));
+
+        Button searchPrev = new Button("▲");
+        searchPrev.setTooltip(new Tooltip("Previous Result"));
+        searchPrev.setOnAction(e -> navigateSearchResult(false));
+
+        caseSensitiveCheck = new CheckBox("Aa");
+        caseSensitiveCheck.setTooltip(new Tooltip("Case Sensitive"));
+
+        searchResultLabel = new Label("");
+
+        Button closeSearch = new Button("✕");
+        closeSearch.setOnAction(e -> hideSearchBar());
+
+        searchBar = new HBox(6,
+            new Label("Find:"), searchField,
+            searchPrev, searchNext,
+            caseSensitiveCheck, searchResultLabel,
+            closeSearch
+        );
+        searchBar.setAlignment(Pos.CENTER_LEFT);
+        searchBar.setPadding(new Insets(3, 8, 3, 8));
+        searchBar.setVisible(false);
+        searchBar.setManaged(false);
+        return searchBar;
+    }
+
+    private void showSearchBar() {
+        searchBar.setVisible(true);
+        searchBar.setManaged(true);
+        searchField.requestFocus();
+        searchField.selectAll();
+    }
+
+    private void hideSearchBar() {
+        searchBar.setVisible(false);
+        searchBar.setManaged(false);
+        searchResultLabel.setText("");
+        lastSearchResults = null;
+    }
+
+    private void performSearch() {
+        if (!controller.hasDocument()) return;
+        String query = searchField.getText().trim();
+        if (query.isEmpty()) {
+            searchResultLabel.setText("No query");
             return;
         }
+        lastSearchResults = searchService.search(query, caseSensitiveCheck.isSelected());
+        updateSearchResultLabel();
+        if (!lastSearchResults.isEmpty()) {
+            // Navigate to first result's page
+            controller.setCurrentPage(lastSearchResults.get(0).getPageIndex());
+        }
+    }
 
+    private void navigateSearchResult(boolean forward) {
+        if (lastSearchResults == null || lastSearchResults.isEmpty()) {
+            performSearch();
+            return;
+        }
+        SearchResult result = forward ? searchService.nextResult() : searchService.previousResult();
+        if (result != null) {
+            controller.setCurrentPage(result.getPageIndex());
+        }
+        updateSearchResultLabel();
+    }
+
+    private void updateSearchResultLabel() {
+        if (lastSearchResults == null || lastSearchResults.isEmpty()) {
+            searchResultLabel.setText("No results");
+        } else {
+            int idx  = searchService.getCurrentResultIndex() + 1;
+            int total = searchService.getResultCount();
+            searchResultLabel.setText(idx + " / " + total);
+        }
+    }
+
+    // ── Sidebar ──────────────────────────────────────────────────────────────
+
+    private TabPane buildSidebar() {
+        // Thumbnail tab
+        thumbnailContainer = new VBox(10);
+        thumbnailContainer.setAlignment(Pos.TOP_CENTER);
+        thumbnailContainer.setPrefWidth(140);
+
+        ScrollPane thumbScroll = new ScrollPane(thumbnailContainer);
+        thumbScroll.setFitToWidth(true);
+        thumbScroll.setFocusTraversable(false);
+
+        Tab thumbTab = new Tab("Pages", thumbScroll);
+        thumbTab.setClosable(false);
+
+        // Bookmarks tab
+        bookmarkTree = new TreeView<>();
+        bookmarkTree.setShowRoot(false);
+        bookmarkTree.setRoot(new TreeItem<>("Bookmarks"));
+        bookmarkTree.setOnMouseClicked(e -> {
+            if (e.getClickCount() == 2) navigateToBookmark();
+        });
+
+        Tab bookmarkTab = new Tab("Bookmarks", bookmarkTree);
+        bookmarkTab.setClosable(false);
+
+        TabPane sidebar = new TabPane(thumbTab, bookmarkTab);
+        sidebar.setPrefWidth(160);
+        sidebar.setTabMinWidth(60);
+        return sidebar;
+    }
+
+    // ── Status bar ───────────────────────────────────────────────────────────
+
+    private HBox buildStatusBar() {
+        statusPageLabel = new Label("No document");
+        statusZoomLabel = new Label("");
+        statusDocLabel  = new Label("");
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        HBox bar = new HBox(12, statusDocLabel, spacer, statusPageLabel, statusZoomLabel);
+        bar.setAlignment(Pos.CENTER_LEFT);
+        bar.setPadding(new Insets(3, 8, 3, 8));
+        bar.setStyle("-fx-border-color: -fx-box-border; -fx-border-width: 1 0 0 0;");
+        return bar;
+    }
+
+    // ── Keyboard shortcuts (app-level) ────────────────────────────────────────
+
+    private void installAppKeyboardShortcuts(Scene scene) {
+        scene.setOnKeyPressed(event -> {
+            switch (event.getCode()) {
+                case F11:
+                    primaryStage.setFullScreen(!primaryStage.isFullScreen());
+                    event.consume();
+                    break;
+                case F:
+                    if (event.isControlDown()) { showSearchBar(); event.consume(); }
+                    break;
+                case Z:
+                    if (event.isControlDown()) { annotationManager.undo(); refreshAnnotationButtons(); event.consume(); }
+                    break;
+                case Y:
+                    if (event.isControlDown()) { annotationManager.redo(); refreshAnnotationButtons(); event.consume(); }
+                    break;
+                case W:
+                    if (!event.isControlDown()) { controller.setFitWidth(); event.consume(); }
+                    break;
+                case P:
+                    if (!event.isControlDown()) { controller.setFitPage(); event.consume(); }
+                    break;
+                case G:
+                    if (event.isControlDown()) { pageField.requestFocus(); event.consume(); }
+                    break;
+                case ESCAPE:
+                    if (searchBar.isVisible()) { hideSearchBar(); event.consume(); }
+                    break;
+                default:
+                    break;
+            }
+        });
+    }
+
+    // ── Drag and drop ─────────────────────────────────────────────────────────
+
+    private void installDragAndDrop(Scene scene) {
+        scene.setOnDragOver((DragEvent event) -> {
+            Dragboard db = event.getDragboard();
+            if (db.hasFiles() && db.getFiles().stream()
+                    .anyMatch(f -> f.getName().toLowerCase().endsWith(".pdf"))) {
+                event.acceptTransferModes(TransferMode.COPY);
+            }
+            event.consume();
+        });
+
+        scene.setOnDragDropped((DragEvent event) -> {
+            Dragboard db = event.getDragboard();
+            boolean success = false;
+            if (db.hasFiles()) {
+                db.getFiles().stream()
+                    .filter(f -> f.getName().toLowerCase().endsWith(".pdf"))
+                    .findFirst()
+                    .ifPresent(this::openFile);
+                success = true;
+            }
+            event.setDropCompleted(success);
+            event.consume();
+        });
+    }
+
+    // ── Document lifecycle ────────────────────────────────────────────────────
+
+    private void openPdfDialog() {
+        FileChooser chooser = new FileChooser();
+        chooser.setTitle("Open PDF");
+        chooser.getExtensionFilters().add(
+            new FileChooser.ExtensionFilter("PDF Files", "*.pdf")
+        );
+        File file = chooser.showOpenDialog(primaryStage);
+        if (file != null) openFile(file);
+    }
+
+    private void openFile(File file) {
         try {
+            saveCurrentFileState();
 
-            closeCurrentDocument();
+            if (thumbnailTask != null) thumbnailTask.cancel(true);
+            controller.closeDocument();
+            searchService.search("", false); // clear results
 
-            PDDocument document =
-                    pdfDocumentService.open(file);
-
+            PDDocument document = pdfDocumentService.open(file);
             controller.openDocument(document);
 
+            currentFile = file;
+            recentFilesService.addFile(file);
+            refreshRecentFilesMenu();
+
             setViewerControlsEnabled(true);
+            primaryStage.setTitle("FilzaPDF — " + file.getName());
 
-            renderAllPages();
-            renderThumbnails();
-
-        } catch (
-                IOException |
-                RuntimeException e
-        ) {
-            e.printStackTrace();
-        }
-    }
-
-private void renderAllPages() {
-
-    pageContainer.getChildren().clear();
-    pageViews.clear();
-
-    PdfViewerModel model =
-            controller.getModel();
-
-    int currentPage =
-            model.getCurrentPage();
-
-    int pageCount =
-            model.getPageCount();
-
-    try {
-
-        float dpi =
-                (float) (
-                        120 *
-                        model.getZoom()
-                );
-
-        for (
-                int pageIndex = 0;
-                pageIndex < pageCount;
-                pageIndex++
-        ) {
-
-            ImageView imageView =
-                    new ImageView();
-
-            imageView.setPreserveRatio(true);
-
-            pageViews.add(imageView);
-
-            pageContainer
-                    .getChildren()
-                    .add(imageView);
-
-            if (
-                    Math.abs(
-                            pageIndex - currentPage
-                    ) <= 2
-            ) {
-
-                BufferedImage image =
-                        controller.renderPage(
-                                pageIndex,
-                                dpi
-                        );
-
-                imageView.setImage(
-                        SwingFXUtils.toFXImage(
-                                image,
-                                null
-                        )
-                );
-            }
-        }
-
-        updateLabels();
-
-    } catch (IOException e) {
-        e.printStackTrace();
-    }
-}
-
-private void renderVisiblePages() {
-
-    if (!controller.hasDocument()) {
-        return;
-    }
-
-    PdfViewerModel model =
-            controller.getModel();
-
-    int currentPage =
-            model.getCurrentPage();
-
-    int pageCount =
-            model.getPageCount();
-
-    float dpi =
-            (float) (
-                    120 *
-                    model.getZoom()
-            );
-
-    int start =
-            Math.max(
-                    0,
-                    currentPage - 2
-            );
-
-    int end =
-            Math.min(
-                    pageCount - 1,
-                    currentPage + 2
-            );
-
-    try {
-
-        for (
-                int pageIndex = start;
-                pageIndex <= end;
-                pageIndex++
-        ) {
-
-            ImageView imageView =
-                    pageViews.get(pageIndex);
-
-            if (imageView.getImage() != null) {
-                continue;
+            // Restore last page/zoom for this file
+            int lastPage = viewerPreferences.getLastPage(file.getAbsolutePath());
+            double lastZoom = viewerPreferences.getLastZoom(file.getAbsolutePath());
+            if (lastZoom > 0) controller.setZoom(lastZoom);
+            if (lastPage > 0 && lastPage < controller.getModel().getPageCount()) {
+                controller.setCurrentPage(lastPage);
             }
 
-            BufferedImage image =
-                    controller.renderPage(
-                            pageIndex,
-                            dpi
-                    );
+            // Background thumbnail loading
+            renderThumbnailsInBackground();
 
-            imageView.setImage(
-                    SwingFXUtils.toFXImage(
-                            image,
-                            null
-                    )
-            );
-        }
+            // Background bookmark extraction
+            loadBookmarksInBackground(document);
 
-    } catch (IOException e) {
-        e.printStackTrace();
-    }
-}
+            // Background text extraction for search
+            searchService.extractTextInBackground(document, () ->
+                Platform.runLater(() -> statusDocLabel.setText(file.getName() + " — ready for search")));
 
-
-        private void renderThumbnails() {
-
-            thumbnailContainer
-                    .getChildren()
-                    .clear();
-
-            try {
-
-                PdfViewerModel model =
-                        controller.getModel();
-
-            for (
-                    int pageIndex = 0;
-                    pageIndex < model.getPageCount();
-                    pageIndex++
-            ) {
-
-                BufferedImage image =
-                        controller.renderPage(
-                                pageIndex,
-                                25
-                        );
-
-                ImageView thumbnail =
-                        new ImageView(
-                                SwingFXUtils.toFXImage(
-                                        image,
-                                        null
-                                )
-                        );
-
-                thumbnail.setPreserveRatio(
-                        true
-                );
-
-                thumbnail.setFitWidth(110);
-
-                final int selectedPage =
-                        pageIndex;
-
-                thumbnail.setOnMouseClicked(
-                        event -> {
-
-                            controller.setCurrentPage(
-                                    selectedPage
-                            );
-
-                            scrollToCurrentPage();
-                            updateLabels();
-                        }
-                );
-
-                Label label =
-                        new Label(
-                                "Page " +
-                                (pageIndex + 1)
-                        );
-
-                VBox box =
-                        new VBox(
-                                5,
-                                label,
-                                thumbnail
-                        );
-
-                box.setAlignment(
-                        Pos.CENTER
-                );
-
-                thumbnailContainer
-                        .getChildren()
-                        .add(box);
-            }
+            statusDocLabel.setText(file.getName());
+            hideSearchBar();
 
         } catch (IOException e) {
-            e.printStackTrace();
+            showErrorDialog("Failed to open PDF",
+                "The file could not be opened.", e.getMessage());
         }
     }
 
-    private void updateCurrentPageFromScroll() {
+    private void closeDocument() {
+        if (!controller.hasDocument()) return;
+        saveCurrentFileState();
+        if (thumbnailTask != null) thumbnailTask.cancel(true);
+        controller.closeDocument();
+        currentFile = null;
+        thumbnailContainer.getChildren().clear();
+        bookmarkTree.setRoot(new TreeItem<>("Bookmarks"));
+        setViewerControlsEnabled(false);
+        primaryStage.setTitle("FilzaPDF");
+        updateStatusBar();
+        hideSearchBar();
+    }
 
-        if (
-                !controller.hasDocument() ||
-                pageViews.isEmpty()
-        ) {
-            return;
+    private void saveCurrentFileState() {
+        if (currentFile != null && controller.hasDocument()) {
+            PdfViewerModel model = controller.getModel();
+            viewerPreferences.setLastPage(currentFile.getAbsolutePath(), model.getCurrentPage());
+            viewerPreferences.setLastZoom(currentFile.getAbsolutePath(), model.getZoom());
+        }
+    }
+
+    // ── Thumbnail loading ─────────────────────────────────────────────────────
+
+    private void renderThumbnailsInBackground() {
+        thumbnailContainer.getChildren().clear();
+        if (!controller.hasDocument()) return;
+
+        int pageCount = controller.getModel().getPageCount();
+
+        // Place empty placeholder boxes immediately so layout is stable
+        for (int i = 0; i < pageCount; i++) {
+            final int idx = i;
+            Label numLabel = new Label("Page " + (i + 1));
+            ImageView view = new ImageView();
+            view.setPreserveRatio(true);
+            view.setFitWidth(110);
+            view.setOnMouseClicked(e -> controller.setCurrentPage(idx));
+            VBox box = new VBox(4, numLabel, view);
+            box.setAlignment(Pos.CENTER);
+            thumbnailContainer.getChildren().add(box);
         }
 
-        PdfViewerModel model =
-                controller.getModel();
-
-        double scrollPosition =
-                scrollPane.getVvalue();
-
-        double maxScroll =
-                scrollPane.getVmax();
-
-        if (maxScroll <= 0) {
-            return;
-        }
-
-        double targetPosition =
-                scrollPosition * maxScroll;
-
-        double accumulatedHeight = 0;
-
-        for (
-                int i = 0;
-                i < pageViews.size();
-                i++
-        ) {
-
-            accumulatedHeight +=
-                    pageViews
-                            .get(i)
-                            .getBoundsInParent()
-                            .getHeight();
-
-            if (
-                    targetPosition <=
-                    accumulatedHeight
-            ) {
-
-                if (
-                        model.getCurrentPage() != i
-                ) {
-
-                    controller.setCurrentPage(i);
-                    updateLabels();
+        thumbnailTask = thumbnailExecutor.submit(() -> {
+            for (int i = 0; i < pageCount; i++) {
+                if (Thread.currentThread().isInterrupted()) break;
+                final int pageIndex = i;
+                try {
+                    BufferedImage img = controller.getRenderer().renderPage(pageIndex, 25f);
+                    if (Thread.currentThread().isInterrupted()) break;
+                    Platform.runLater(() -> {
+                        if (pageIndex < thumbnailContainer.getChildren().size()) {
+                            VBox box = (VBox) thumbnailContainer.getChildren().get(pageIndex);
+                            ImageView view = (ImageView) box.getChildren().get(1);
+                            view.setImage(SwingFXUtils.toFXImage(img, null));
+                        }
+                    });
+                } catch (Exception e) {
+                    System.err.println("Thumbnail error page " + pageIndex + ": " + e.getMessage());
                 }
-
-                return;
             }
+        });
+    }
+
+    // ── Bookmark loading ──────────────────────────────────────────────────────
+
+    private void loadBookmarksInBackground(PDDocument document) {
+        bookmarkTree.setRoot(new TreeItem<>("Bookmarks"));
+        thumbnailExecutor.submit(() -> {
+            try {
+                List<BookmarkNode> nodes = bookmarkService.extractBookmarks(document);
+                Platform.runLater(() -> populateBookmarkTree(nodes));
+            } catch (Exception e) {
+                System.err.println("Bookmark extraction error: " + e.getMessage());
+            }
+        });
+    }
+
+    private void populateBookmarkTree(List<BookmarkNode> nodes) {
+        TreeItem<String> root = new TreeItem<>("Bookmarks");
+        root.setExpanded(true);
+        for (BookmarkNode node : nodes) {
+            root.getChildren().add(buildTreeItem(node));
+        }
+        bookmarkTree.setRoot(root);
+    }
+
+    private TreeItem<String> buildTreeItem(BookmarkNode node) {
+        // Store page index in the title so we can navigate on click
+        String label = node.getTitle() != null ? node.getTitle() : "(untitled)";
+        TreeItem<String> item = new TreeItem<>(label + "\u0000" + node.getPageIndex());
+        item.setExpanded(true);
+        for (BookmarkNode child : node.getChildren()) {
+            item.getChildren().add(buildTreeItem(child));
+        }
+        return item;
+    }
+
+    private void navigateToBookmark() {
+        TreeItem<String> selected = bookmarkTree.getSelectionModel().getSelectedItem();
+        if (selected == null || !controller.hasDocument()) return;
+        String value = selected.getValue();
+        if (value == null) return;
+        // Parse encoded page index
+        int sep = value.lastIndexOf('\u0000');
+        if (sep < 0) return;
+        try {
+            int pageIndex = Integer.parseInt(value.substring(sep + 1));
+            if (pageIndex >= 0) controller.setCurrentPage(pageIndex);
+        } catch (NumberFormatException ignored) {}
+    }
+
+    // ── Recent files menu ─────────────────────────────────────────────────────
+
+    private void refreshRecentFilesMenu() {
+        recentFilesMenu.getItems().clear();
+        List<String> recents = recentFilesService.getRecentFiles();
+        if (recents.isEmpty()) {
+            MenuItem none = new MenuItem("(none)");
+            none.setDisable(true);
+            recentFilesMenu.getItems().add(none);
+        } else {
+            for (String path : recents) {
+                File f = new File(path);
+                MenuItem item = new MenuItem(f.getName());
+                item.setOnAction(e -> openFile(f));
+                recentFilesMenu.getItems().add(item);
+            }
+            recentFilesMenu.getItems().add(new SeparatorMenuItem());
+            MenuItem clear = new MenuItem("Clear Recent");
+            clear.setOnAction(e -> clearRecentFiles());
+            recentFilesMenu.getItems().add(clear);
         }
     }
 
-    private void showNextPage() {
-
-        if (controller.nextPage()) {
-            scrollToCurrentPage();
-            updateLabels();
-        }
+    private void clearRecentFiles() {
+        recentFilesService.clearAll();
+        refreshRecentFilesMenu();
     }
 
-    private void showPreviousPage() {
+    // ── Document Properties dialog ────────────────────────────────────────────
 
-        if (controller.previousPage()) {
-            scrollToCurrentPage();
-            updateLabels();
-        }
-    }
+    private void showDocumentProperties() {
+        if (!controller.hasDocument()) return;
 
-    private void scrollToCurrentPage() {
+        org.apache.pdfbox.pdmodel.PDDocument doc = controller.getDocument();
+        org.apache.pdfbox.pdmodel.PDDocumentInformation info = doc.getDocumentInformation();
 
-        if (pageViews.isEmpty()) {
-            return;
-        }
-
-        int pageIndex =
-                controller
-                        .getModel()
-                        .getCurrentPage();
-
-        if (
-                pageIndex < 0 ||
-                pageIndex >= pageViews.size()
-        ) {
-            return;
-        }
-
-        ImageView target =
-                pageViews.get(pageIndex);
-
-        double targetY =
-                target
-                        .getBoundsInParent()
-                        .getMinY();
-
-        double contentHeight =
-                pageContainer
-                        .getBoundsInLocal()
-                        .getHeight();
-
-        double viewportHeight =
-                scrollPane
-                        .getViewportBounds()
-                        .getHeight();
-
-        if (
-                contentHeight <=
-                viewportHeight
-        ) {
-            return;
-        }
-
-        double scrollableHeight =
-                contentHeight -
-                viewportHeight;
-
-        scrollPane.setVvalue(
-                targetY / scrollableHeight
+        String text = String.join("\n",
+            "Title:    " + nvl(info.getTitle()),
+            "Author:   " + nvl(info.getAuthor()),
+            "Subject:  " + nvl(info.getSubject()),
+            "Creator:  " + nvl(info.getCreator()),
+            "Producer: " + nvl(info.getProducer()),
+            "Pages:    " + doc.getNumberOfPages()
         );
+
+        Alert alert = new Alert(AlertType.INFORMATION);
+        alert.setTitle("Document Properties");
+        alert.setHeaderText(currentFile != null ? currentFile.getName() : "PDF Document");
+        alert.setContentText(text);
+        alert.showAndWait();
+    }
+
+    // ── Annotation helpers ────────────────────────────────────────────────────
+
+    /** Demo: adds a placeholder annotation on the current page. Real tools would use AnnotationTool implementations. */
+    @SuppressWarnings("unused")
+    private void addDemoAnnotation(AnnotationType type, int pageIndex, double x, double y, double w, double h) {
+        Annotation a = new Annotation();
+        a.setType(type);
+        a.setPageIndex(pageIndex);
+        a.setX(x); a.setY(y);
+        a.setWidth(w); a.setHeight(h);
+        a.setColor("#FFFF00");
+        annotationManager.executeCommand(new AddAnnotationCommand(annotationManager, a));
+    }
+
+    private void onAnnotationsChanged() {
+        refreshAnnotationButtons();
+    }
+
+    private void refreshAnnotationButtons() {
+        // Buttons are always present; undo/redo gracefully no-op when stacks are empty
+        // (AnnotationManager already guards them)
+    }
+
+    // ── Page navigation helpers ───────────────────────────────────────────────
+
+    private void goToPage(int pageIndex) {
+        if (controller.hasDocument()) controller.setCurrentPage(pageIndex);
     }
 
     private void jumpToPage() {
-
-        if (!controller.hasDocument()) {
-            return;
-        }
-
+        if (!controller.hasDocument()) return;
         try {
-
-            int requestedPage =
-                    Integer.parseInt(
-                            pageField.getText()
-                    );
-
-            int target =
-                    requestedPage - 1;
-
-            int pageCount =
-                    controller
-                            .getModel()
-                            .getPageCount();
-
-            if (
-                    target < 0 ||
-                    target >= pageCount
-            ) {
+            int target = Integer.parseInt(pageField.getText()) - 1;
+            int count  = controller.getModel().getPageCount();
+            if (target >= 0 && target < count) {
+                controller.setCurrentPage(target);
+            } else {
                 updateLabels();
-                return;
             }
-
-            controller.setCurrentPage(target);
-
-            scrollToCurrentPage();
-            updateLabels();
-
         } catch (NumberFormatException e) {
             updateLabels();
         }
     }
 
-    private void zoomIn() {
+    // ── Label / status update ─────────────────────────────────────────────────
 
-        if (!controller.hasDocument()) {
-            return;
-        }
-
-        controller.zoomIn();
-        renderAllPages();
-    }
-
-    private void zoomOut() {
-
-        if (!controller.hasDocument()) {
-            return;
-        }
-
-        controller.zoomOut();
-        renderAllPages();
-    }
-
-    private void resetZoom() {
-
-        if (!controller.hasDocument()) {
-            return;
-        }
-
-        controller.resetZoom();
-        renderAllPages();
-    }
-
-    private void fitWidth() {
-
-        if (!controller.hasDocument()) {
-            return;
-        }
-
-        double availableWidth =
-                scrollPane
-                        .getViewportBounds()
-                        .getWidth();
-
-        int pageIndex =
-                controller
-                        .getModel()
-                        .getCurrentPage();
-
-        double pageWidth =
-                controller
-                        .getDocument()
-                        .getPage(pageIndex)
-                        .getMediaBox()
-                        .getWidth();
-
-        if (availableWidth <= 0) {
-            return;
-        }
-
-        controller.setZoom(
-                availableWidth / pageWidth
-        );
-
-        controller.setFitWidth();
-
-        renderAllPages();
-    }
-
-    private void fitPage() {
-
-        if (!controller.hasDocument()) {
-            return;
-        }
-
-        double availableWidth =
-                scrollPane
-                        .getViewportBounds()
-                        .getWidth();
-
-        double availableHeight =
-                scrollPane
-                        .getViewportBounds()
-                        .getHeight();
-
-        int pageIndex =
-                controller
-                        .getModel()
-                        .getCurrentPage();
-
-        double pageWidth =
-                controller
-                        .getDocument()
-                        .getPage(pageIndex)
-                        .getMediaBox()
-                        .getWidth();
-
-        double pageHeight =
-                controller
-                        .getDocument()
-                        .getPage(pageIndex)
-                        .getMediaBox()
-                        .getHeight();
-
-        double widthZoom =
-                availableWidth / pageWidth;
-
-        double heightZoom =
-                availableHeight / pageHeight;
-
-        controller.setZoom(
-                Math.min(
-                        widthZoom,
-                        heightZoom
-                )
-        );
-
-        controller.setFitPage();
-
-        renderAllPages();
+    private void onPageChanged() {
+        updateLabels();
+        updateStatusBar();
     }
 
     private void updateLabels() {
-
         if (!controller.hasDocument()) {
+            pageLabel.setText("of 0");
+            pageField.setText("");
+            zoomLabel.setText("100%");
             return;
         }
-
-        PdfViewerModel model =
-                controller.getModel();
-
-        int pageIndex =
-                model.getCurrentPage();
-
-        pageLabel.setText(
-                "of " +
-                model.getPageCount()
-        );
-
-        pageField.setText(
-                String.valueOf(pageIndex + 1)
-        );
-
-        zoomLabel.setText(
-                Math.round(
-                        model.getZoom() * 100
-                ) +
-                "%"
-        );
-
-        previousButton.setDisable(
-                pageIndex == 0
-        );
-
-        nextButton.setDisable(
-                pageIndex ==
-                        model.getPageCount() - 1
-        );
+        PdfViewerModel model = controller.getModel();
+        pageLabel.setText("of " + model.getPageCount());
+        pageField.setText(String.valueOf(model.getCurrentPage() + 1));
+        zoomLabel.setText(String.format("%.0f%%", model.getZoom() * 100));
     }
 
-    private void setViewerControlsEnabled(
-            boolean enabled
-    ) {
+    private void updateStatusBar() {
+        if (!controller.hasDocument()) {
+            statusPageLabel.setText("No document");
+            statusZoomLabel.setText("");
+            return;
+        }
+        PdfViewerModel model = controller.getModel();
+        statusPageLabel.setText("Page " + (model.getCurrentPage() + 1) + " of " + model.getPageCount());
+        statusZoomLabel.setText(String.format("Zoom %.0f%%", model.getZoom() * 100));
+    }
 
-        previousButton.setDisable(!enabled);
-        nextButton.setDisable(!enabled);
-        zoomOutButton.setDisable(!enabled);
-        zoomInButton.setDisable(!enabled);
-        fitWidthButton.setDisable(!enabled);
-        fitPageButton.setDisable(!enabled);
+    // ── UI control state ──────────────────────────────────────────────────────
+
+    private void setViewerControlsEnabled(boolean enabled) {
+        previousButton .setDisable(!enabled);
+        nextButton     .setDisable(!enabled);
+        zoomOutButton  .setDisable(!enabled);
+        zoomInButton   .setDisable(!enabled);
+        fitWidthButton .setDisable(!enabled);
+        fitPageButton  .setDisable(!enabled);
         resetZoomButton.setDisable(!enabled);
-        pageField.setDisable(!enabled);
+        undoButton     .setDisable(!enabled);
+        redoButton     .setDisable(!enabled);
+        pageField      .setDisable(!enabled);
     }
 
-    private void closeCurrentDocument() {
+    // ── Dialogs ───────────────────────────────────────────────────────────────
 
-        controller.closeDocument();
-
-        pageViews.clear();
-
-        if (pageContainer != null) {
-            pageContainer
-                    .getChildren()
-                    .clear();
-        }
-
-        if (thumbnailContainer != null) {
-            thumbnailContainer
-                    .getChildren()
-                    .clear();
-        }
-
-        if (pageLabel != null) {
-            pageLabel.setText("of");
-        }
-
-        if (pageField != null) {
-            pageField.clear();
-        }
-
-        if (zoomLabel != null) {
-            zoomLabel.setText("100%");
-        }
-
-        if (previousButton != null) {
-            setViewerControlsEnabled(false);
-        }
+    private void showErrorDialog(String title, String header, String detail) {
+        Alert alert = new Alert(AlertType.ERROR);
+        alert.setTitle(title);
+        alert.setHeaderText(header);
+        // Show user-friendly message; developer detail goes to stderr, not to user
+        alert.setContentText("An error occurred. Please check the file and try again.");
+        alert.showAndWait();
+        System.err.println("[ERROR] " + title + " | " + detail);
     }
 
-    @Override
-    public void stop() {
-        closeCurrentDocument();
+    private void showAboutDialog() {
+        Alert alert = new Alert(AlertType.INFORMATION);
+        alert.setTitle("About FilzaPDF");
+        alert.setHeaderText("FilzaPDF v0.1.0");
+        alert.setContentText(
+            "A professional Java desktop PDF reader.\n\n" +
+            "Built with:\n" +
+            "  • Java 21\n" +
+            "  • JavaFX 21\n" +
+            "  • Apache PDFBox 3.0.6\n\n" +
+            "Keyboard shortcuts:\n" +
+            "  Ctrl+O  Open PDF\n" +
+            "  Ctrl+F  Find\n" +
+            "  ← / →   Previous / Next page\n" +
+            "  + / −   Zoom in / out\n" +
+            "  Ctrl+0  Reset zoom\n" +
+            "  F11     Fullscreen\n" +
+            "  Ctrl+Z  Undo annotation\n" +
+            "  Ctrl+Y  Redo annotation"
+        );
+        alert.showAndWait();
+    }
+
+    // ── Utilities ─────────────────────────────────────────────────────────────
+
+    private static String nvl(String s) {
+        return s != null && !s.isEmpty() ? s : "—";
     }
 
     public static void main(String[] args) {

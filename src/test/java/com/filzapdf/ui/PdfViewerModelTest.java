@@ -24,6 +24,7 @@ class PdfViewerModelTest {
     }
 
     @Test
+    @SuppressWarnings("unused")
     void rejectsInvalidPageCount() {
 
         assertThrows(
@@ -167,6 +168,7 @@ class PdfViewerModelTest {
     }
 
     @Test
+    @SuppressWarnings("unused")
     void rejectsInvalidCurrentPage() {
 
         PdfViewerModel model =
@@ -184,6 +186,7 @@ class PdfViewerModelTest {
     }
 
     @Test
+    @SuppressWarnings("unused")
     void rejectsInvalidZoom() {
 
         PdfViewerModel model =

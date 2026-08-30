@@ -1,0 +1,93 @@
+.root {
+    -fx-background-color: #2b2b2b;
+    -fx-font-family: "Segoe UI", "System", sans-serif;
+    -fx-font-size: 13px;
+}
+
+.menu-bar {
+    -fx-background-color: #3c3f41;
+    -fx-text-fill: #bbbbbb;
+}
+
+.menu-bar .menu .label {
+    -fx-text-fill: #bbbbbb;
+}
+
+.context-menu {
+    -fx-background-color: #3c3f41;
+}
+
+.menu-item .label {
+    -fx-text-fill: #bbbbbb;
+}
+
+.hbox {
+    -fx-background-color: #3c3f41;
+}
+
+.scroll-pane, .scroll-pane > .viewport {
+    -fx-background-color: #3a3a3a;
+}
+
+.button {
+    -fx-background-color: #4b4d4f;
+    -fx-text-fill: #d8d8d8;
+    -fx-border-radius: 3;
+    -fx-background-radius: 3;
+}
+
+.button:hover {
+    -fx-background-color: #5a5c5e;
+}
+
+.text-field {
+    -fx-background-color: #45494a;
+    -fx-text-fill: #d8d8d8;
+    -fx-border-color: #656769;
+    -fx-border-radius: 2;
+    -fx-background-radius: 2;
+    -fx-prompt-text-fill: #888888;
+}
+
+.label {
+    -fx-text-fill: #d8d8d8;
+}
+
+.tab-pane {
+    -fx-background-color: #3c3f41;
+}
+
+.tab {
+    -fx-background-color: #4b4d4f;
+    -fx-text-fill: #bbbbbb;
+}
+
+.tab:selected {
+    -fx-background-color: #2b2b2b;
+}
+
+.tab .tab-label {
+    -fx-text-fill: #bbbbbb;
+}
+
+.tree-view {
+    -fx-background-color: #3c3f41;
+    -fx-text-fill: #d8d8d8;
+}
+
+.tree-cell {
+    -fx-background-color: transparent;
+    -fx-text-fill: #d8d8d8;
+}
+
+.tree-cell:selected {
+    -fx-background-color: #4b6eaf;
+}
+
+.check-box .text {
+    -fx-text-fill: #d8d8d8;
+}
+
+.separator .line {
+    -fx-border-color: #555759;
+}

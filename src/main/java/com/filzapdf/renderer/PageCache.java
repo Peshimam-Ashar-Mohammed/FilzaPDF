@@ -45,6 +45,13 @@ public class PageCache {
         );
     }
 
+    public boolean containsKey(
+            int pageIndex,
+            float dpi
+    ) {
+        return cache.containsKey(key(pageIndex, dpi));
+    }
+
     public void clear() {
         cache.clear();
     }
