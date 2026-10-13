@@ -14,9 +14,12 @@ import org.apache.pdfbox.pdmodel.interactive.documentnavigation.outline.PDOutlin
 public class BookmarkService {
     public List<BookmarkNode> extractBookmarks(PDDocument document) throws IOException {
         List<BookmarkNode> bookmarks = new ArrayList<>();
-        PDDocumentOutline outline = document.getDocumentCatalog().getDocumentOutline();
-        if (outline != null) {
-            populateBookmarks(outline, bookmarks, document);
+        if (document == null) return bookmarks;
+        synchronized (document) {
+            PDDocumentOutline outline = document.getDocumentCatalog().getDocumentOutline();
+            if (outline != null) {
+                populateBookmarks(outline, bookmarks, document);
+            }
         }
         return bookmarks;
     }

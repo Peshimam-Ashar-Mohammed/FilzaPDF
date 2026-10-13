@@ -3,50 +3,80 @@ package com.filzapdf.app;
 import java.awt.image.BufferedImage;
 import java.io.File;
 import java.io.IOException;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.pdmodel.common.PDRectangle;
 
 import com.filzapdf.annotations.AddAnnotationCommand;
 import com.filzapdf.annotations.Annotation;
 import com.filzapdf.annotations.AnnotationManager;
 import com.filzapdf.annotations.AnnotationType;
+import com.filzapdf.annotations.PdfAnnotationPersistenceService;
 import com.filzapdf.pdf.BookmarkNode;
 import com.filzapdf.pdf.BookmarkService;
+import com.filzapdf.pdf.PdfCreatorService;
 import com.filzapdf.pdf.PdfDocumentService;
+import com.filzapdf.pdf.PdfTextEditorService;
+import com.filzapdf.pdf.PdfToolboxService;
+import com.filzapdf.pdf.RecognizedTextBlock;
+import com.filzapdf.pdf.WordDocumentService;
 import com.filzapdf.persistence.RecentFilesService;
 import com.filzapdf.persistence.ViewerPreferences;
 import com.filzapdf.search.PdfTextSearchService;
 import com.filzapdf.search.SearchResult;
+import com.filzapdf.ui.AboutFilzaDialog;
+import com.filzapdf.ui.ImageToPdfDialog;
+import com.filzapdf.ui.PdfMergerStudioDialog;
+import com.filzapdf.ui.PdfTextInspectorPane;
 import com.filzapdf.ui.PdfViewerController;
+import com.filzapdf.ui.PdfViewerController.InteractionMode;
+import com.filzapdf.ui.PdfViewerController.PageCoordinateClick;
 import com.filzapdf.ui.PdfViewerModel;
+import com.filzapdf.ui.SvgIcons;
 import com.filzapdf.ui.ThemeService;
+import com.filzapdf.ui.WordStudioDialog;
 
 import javafx.application.Application;
 import javafx.application.Platform;
+import javafx.collections.FXCollections;
 import javafx.embed.swing.SwingFXUtils;
 import javafx.geometry.Insets;
+import javafx.geometry.Orientation;
 import javafx.geometry.Pos;
+import javafx.scene.Node;
 import javafx.scene.Scene;
 import javafx.scene.control.Alert;
 import javafx.scene.control.Alert.AlertType;
 import javafx.scene.control.Button;
+import javafx.scene.control.ButtonBar.ButtonData;
 import javafx.scene.control.ButtonType;
 import javafx.scene.control.CheckBox;
 import javafx.scene.control.CheckMenuItem;
+import javafx.scene.control.ColorPicker;
+import javafx.scene.control.ComboBox;
+import javafx.scene.control.Dialog;
 import javafx.scene.control.Label;
 import javafx.scene.control.Menu;
 import javafx.scene.control.MenuBar;
 import javafx.scene.control.MenuItem;
+import javafx.scene.control.PasswordField;
 import javafx.scene.control.ScrollPane;
 import javafx.scene.control.Separator;
 import javafx.scene.control.SeparatorMenuItem;
+import javafx.scene.control.Spinner;
 import javafx.scene.control.Tab;
 import javafx.scene.control.TabPane;
+import javafx.scene.control.TextArea;
 import javafx.scene.control.TextField;
+import javafx.scene.control.TextInputDialog;
+import javafx.scene.control.ToggleButton;
+import javafx.scene.control.ToggleGroup;
 import javafx.scene.control.Tooltip;
 import javafx.scene.control.TreeItem;
 import javafx.scene.control.TreeView;
@@ -58,39 +88,70 @@ import javafx.scene.input.KeyCodeCombination;
 import javafx.scene.input.KeyCombination;
 import javafx.scene.input.TransferMode;
 import javafx.scene.layout.BorderPane;
+import javafx.scene.layout.GridPane;
 import javafx.scene.layout.HBox;
 import javafx.scene.layout.Priority;
 import javafx.scene.layout.Region;
+import javafx.scene.layout.StackPane;
 import javafx.scene.layout.VBox;
+import javafx.scene.paint.Color;
+import javafx.stage.DirectoryChooser;
 import javafx.stage.FileChooser;
 import javafx.stage.Stage;
 
 /**
- * FilzaPDF main application.
- *
- * Owns the Stage, Scene, MenuBar, toolbar, sidebar, status bar,
- * and delegates document/rendering work to PdfViewerController
- * and the service layer (search, annotations, persistence, bookmarks).
+ * FilzaPDF Studio — Professional PDF & Document Workspace.
  */
 public class FilzaPdfApplication extends Application {
 
     // ── Services ────────────────────────────────────────────────────────────
-    private final PdfDocumentService   pdfDocumentService  = new PdfDocumentService();
-    private final RecentFilesService   recentFilesService  = new RecentFilesService();
-    private final ViewerPreferences    viewerPreferences   = new ViewerPreferences();
-    private final PdfTextSearchService searchService       = new PdfTextSearchService();
-    private final BookmarkService      bookmarkService     = new BookmarkService();
-    private final AnnotationManager    annotationManager   = new AnnotationManager();
-    private       ThemeService         themeService;
+    private final PdfDocumentService              pdfDocumentService    = new PdfDocumentService();
+    private final PdfCreatorService               pdfCreatorService     = new PdfCreatorService();
+    private final PdfTextEditorService            textEditorService     = new PdfTextEditorService();
+    private final PdfToolboxService               toolboxService        = new PdfToolboxService();
+    private final WordDocumentService             wordDocumentService   = new WordDocumentService();
+    private final PdfAnnotationPersistenceService annotationPersistence = new PdfAnnotationPersistenceService();
+    private final RecentFilesService              recentFilesService    = new RecentFilesService();
+    private final ViewerPreferences               viewerPreferences     = new ViewerPreferences();
+    private final PdfTextSearchService            searchService         = new PdfTextSearchService();
+    private final BookmarkService                 bookmarkService       = new BookmarkService();
+    private final AnnotationManager               annotationManager     = new AnnotationManager();
+    private       ThemeService                    themeService;
 
-    // ── Controller ──────────────────────────────────────────────────────────
-    private PdfViewerController controller;
+    // ── Controller, Welcome Screen & Inspector ──────────────────────────────
+    private BorderPane           rootPane;
+    private StackPane            centerViewportStack;
+    private ScrollPane           welcomeScrollPane;
+    private VBox                 welcomeRecentBox;
+    private PdfViewerController  controller;
+    private PdfTextInspectorPane textInspectorPane;
+
+    // ── Contextual Sub-Toolbars & Guided Banner ─────────────────────────────
+    private HBox  contextualSubBar;
+    private HBox  editSubGroup;
+    private HBox  markupSubGroup;
+    private HBox  organizeSubGroup;
+    private HBox  guidedBanner;
+    private Label guidedBannerLabel;
+
+    // ── Segmented Workspace Switcher ────────────────────────────────────────
+    private ToggleGroup  workspaceSegmentGroup;
+    private ToggleButton segViewBtn;
+    private ToggleButton segEditBtn;
+    private ToggleButton segMarkupBtn;
+    private ToggleButton segOrganizeBtn;
 
     // ── State ────────────────────────────────────────────────────────────────
     private File    currentFile;
     private Stage   primaryStage;
+    private boolean hasUnsavedChanges = false;
 
     // ── Toolbar controls ────────────────────────────────────────────────────
+    private Button    homeButton;
+    private Button    saveButton;
+    private Button    saveAsButton;
+    private Button    exportWordButton;
+    private Button    themeToggleButton;
     private Button    previousButton;
     private Button    nextButton;
     private Button    zoomOutButton;
@@ -104,6 +165,28 @@ public class FilzaPdfApplication extends Application {
     private Label     pageLabel;
     private Label     zoomLabel;
 
+    // ── Editing & Tool bar controls ─────────────────────────────────────────
+    private ToggleGroup  modeToggleGroup;
+    private ToggleButton browseModeBtn;
+    private ToggleButton editTextModeBtn;
+    private ToggleButton addTextModeBtn;
+    private ToggleButton placeImageModeBtn;
+    private ToggleButton highlightModeBtn;
+    private ToggleButton underlineModeBtn;
+    private ToggleButton strikeModeBtn;
+    private ToggleButton freehandModeBtn;
+    private ToggleButton rectModeBtn;
+    private ToggleButton redactModeBtn;
+    private ToggleButton noteModeBtn;
+    private ColorPicker  annotColorPicker;
+
+    private Button addImagePagesBtn;
+    private Button rotateCwBtn;
+    private Button insertBlankBtn;
+    private Button deletePageBtn;
+    private Button watermarkBtn;
+    private Button pageNumsBtn;
+
     // ── Search bar ──────────────────────────────────────────────────────────
     private HBox      searchBar;
     private TextField searchField;
@@ -115,9 +198,10 @@ public class FilzaPdfApplication extends Application {
     private Label statusPageLabel;
     private Label statusZoomLabel;
     private Label statusDocLabel;
+    private Label statusModeLabel;
 
     // ── Sidebar ─────────────────────────────────────────────────────────────
-    private VBox     thumbnailContainer;
+    private VBox             thumbnailContainer;
     private TreeView<String> bookmarkTree;
 
     // ── Thumbnail background loading ─────────────────────────────────────────
@@ -136,32 +220,45 @@ public class FilzaPdfApplication extends Application {
     @Override
     public void start(Stage stage) {
         this.primaryStage = stage;
-        this.themeService  = new ThemeService(viewerPreferences);
-        this.controller    = new PdfViewerController(stage);
+        this.themeService = new ThemeService(viewerPreferences);
+        this.controller   = new PdfViewerController(stage);
 
+        controller.setAnnotationManager(annotationManager);
         controller.setOnPageChanged(this::onPageChanged);
+        controller.setOnTextBlockSelected(this::onRecognizedTextBlockSelected);
+        controller.setOnPageCoordinateClicked(this::onPageCoordinateClicked);
+        controller.setOnDocumentModified(() -> {
+            hasUnsavedChanges = true;
+            renderThumbnailsInBackground();
+            updateTitleAndStatus();
+        });
         annotationManager.setOnAnnotationsChanged(this::onAnnotationsChanged);
 
-        BorderPane root = buildRoot();
+        this.textInspectorPane = new PdfTextInspectorPane(controller);
+        this.rootPane = buildRoot();
 
-        Scene scene = new Scene(root, 1280, 760);
+        Scene scene = new Scene(rootPane, 1180, 720);
         themeService.setScene(scene);
+
         controller.installKeyboardShortcuts(scene);
         installAppKeyboardShortcuts(scene);
         installDragAndDrop(scene);
 
         stage.setTitle("FilzaPDF");
+        stage.setMinWidth(960);
+        stage.setMinHeight(600);
         stage.setScene(scene);
         stage.show();
 
         setViewerControlsEnabled(false);
-        root.requestFocus();
+        showWelcomeScreen(true);
+        rootPane.requestFocus();
     }
 
     @Override
     public void stop() {
         saveCurrentFileState();
-        if (controller != null)  controller.shutdown();
+        if (controller != null) controller.shutdown();
         if (searchService != null) searchService.shutdown();
         thumbnailExecutor.shutdownNow();
     }
@@ -172,15 +269,239 @@ public class FilzaPdfApplication extends Application {
         BorderPane root = new BorderPane();
         root.setTop(buildTopSection());
         root.setLeft(buildSidebar());
-        root.setCenter(controller.getRoot());
+
+        welcomeScrollPane = buildWelcomeDashboard();
+        centerViewportStack = new StackPane(controller.getRoot(), welcomeScrollPane);
+        root.setCenter(centerViewportStack);
+
         root.setBottom(buildStatusBar());
         return root;
     }
 
     private VBox buildTopSection() {
         VBox top = new VBox();
-        top.getChildren().addAll(buildMenuBar(), buildToolbar(), buildSearchBar());
+        top.getChildren().addAll(
+                buildMenuBar(),
+                buildMainToolbar(),
+                buildContextualSubBar(),
+                buildGuidedBanner(),
+                buildSearchBar()
+        );
         return top;
+    }
+
+    // ── Architectural Studio Home View ───────────────────────────────────────
+
+    private ScrollPane buildWelcomeDashboard() {
+        Label brandTitle = new Label("FilzaPDF");
+        brandTitle.setStyle("-fx-font-size: 26px; -fx-font-weight: bold;");
+
+        Label badge = new Label("STUDIO");
+        badge.getStyleClass().add("studio-badge");
+
+        Region headerSpacer = new Region();
+        HBox.setHgrow(headerSpacer, Priority.ALWAYS);
+
+        Button storyBtn = new Button("About & Our Story", SvgIcons.icon(SvgIcons.INFO, 13));
+        storyBtn.getStyleClass().add("surface-button");
+        storyBtn.setGraphicTextGap(6);
+        storyBtn.setOnAction(e -> showAboutDialog());
+
+        HBox titleRow = new HBox(10, brandTitle, badge, headerSpacer, storyBtn);
+        titleRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label subtitle = new Label("Free document tools. Your files. Your control. Open, edit, merge, or compose PDFs and Word documents locally.");
+        subtitle.getStyleClass().add("muted-label");
+        subtitle.setStyle("-fx-font-size: 12.5px;");
+
+        VBox headerBox = new VBox(5, titleRow, subtitle);
+        headerBox.setMaxWidth(850);
+
+        GridPane grid = new GridPane();
+        grid.setHgap(14);
+        grid.setVgap(14);
+        grid.setMaxWidth(850);
+
+        grid.add(createStudioCard(
+                SvgIcons.FOLDER_OPEN,
+                "Open Document",
+                "Open any PDF, Word (.docx), or image file directly in the workspace.",
+                "Ctrl+O",
+                this::openPdfOrWordDialog
+        ), 0, 0);
+
+        grid.add(createStudioCard(
+                SvgIcons.IMAGE,
+                "Images to PDF",
+                "Compile PNG, JPG, BMP, or GIF images into a paginated PDF document.",
+                "Studio",
+                this::openImageToPdfStudio
+        ), 1, 0);
+
+        grid.add(createStudioCard(
+                SvgIcons.MERGE,
+                "Merge & Compose PDFs",
+                "Combine pages from multiple PDFs using custom sequences or recipes.",
+                "Ctrl+M",
+                this::openPdfMergerStudio
+        ), 2, 0);
+
+        grid.add(createStudioCard(
+                SvgIcons.FILE_TEXT,
+                "New Document",
+                "Author a formatted document with headings, lists, and images, then export to PDF.",
+                "Ctrl+N",
+                () -> openWordStudio(null)
+        ), 0, 1);
+
+        grid.add(createStudioCard(
+                SvgIcons.TEXT_EDIT,
+                "Edit Word (.docx)",
+                "Open an existing Microsoft Word file for editing and direct PDF conversion.",
+                ".docx",
+                this::promptAndOpenWordFile
+        ), 1, 1);
+
+        grid.add(createStudioCard(
+                SvgIcons.ROTATE,
+                "Convert Word to PDF",
+                "Select a .docx file and render it straight into the PDF viewer.",
+                "Quick Convert",
+                this::directConvertWordToPdf
+        ), 2, 1);
+
+        welcomeRecentBox = new VBox(8);
+        welcomeRecentBox.setMaxWidth(850);
+        refreshWelcomeRecentFiles();
+
+        VBox content = new VBox(22, headerBox, grid, welcomeRecentBox);
+        content.setAlignment(Pos.TOP_CENTER);
+        content.setPadding(new Insets(36, 28, 32, 28));
+
+        ScrollPane sp = new ScrollPane(content);
+        sp.setFitToWidth(true);
+        sp.setFitToHeight(true);
+        return sp;
+    }
+
+    private VBox createStudioCard(String svgPath, String titleText, String descText, String shortcutHint, Runnable action) {
+        Node iconNode = SvgIcons.icon(svgPath, 16);
+        StackPane iconBox = new StackPane(iconNode);
+        iconBox.getStyleClass().add("card-icon-box");
+        iconBox.setPrefSize(30, 30);
+        iconBox.setMinSize(30, 30);
+        iconBox.setMaxSize(30, 30);
+
+        Label hint = new Label(shortcutHint);
+        hint.getStyleClass().add("muted-label");
+        hint.setStyle("-fx-font-size: 11px;");
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        HBox topRow = new HBox(iconBox, spacer, hint);
+        topRow.setAlignment(Pos.CENTER_LEFT);
+
+        Label title = new Label(titleText);
+        title.setStyle("-fx-font-size: 13.5px; -fx-font-weight: bold;");
+
+        Label desc = new Label(descText);
+        desc.setWrapText(true);
+        desc.getStyleClass().add("muted-label");
+        desc.setStyle("-fx-font-size: 11.5px;");
+        desc.setMinHeight(34);
+
+        VBox card = new VBox(8, topRow, title, desc);
+        card.getStyleClass().add("welcome-card");
+        card.setPadding(new Insets(14));
+        card.setPrefWidth(274);
+        card.setOnMouseClicked(e -> action.run());
+        return card;
+    }
+
+    private void refreshWelcomeRecentFiles() {
+        if (welcomeRecentBox == null) return;
+        welcomeRecentBox.getChildren().clear();
+        List<String> recents = recentFilesService.getRecentFiles();
+        if (recents.isEmpty()) return;
+
+        Label sectionTitle = new Label("RECENT FILES");
+        sectionTitle.getStyleClass().add("muted-label");
+        sectionTitle.setStyle("-fx-font-size: 11px; -fx-font-weight: bold;");
+
+        VBox listContainer = new VBox(4);
+        int shown = 0;
+        for (String path : recents) {
+            File f = new File(path);
+            if (!f.exists()) continue;
+            if (shown++ >= 6) break;
+
+            Node fileIcon = SvgIcons.icon(SvgIcons.FILE_TEXT, 14);
+            Label nameLbl = new Label(f.getName());
+            nameLbl.setStyle("-fx-font-weight: 600;");
+
+            Label dirLbl = new Label(f.getParent() != null ? f.getParent() : "");
+            dirLbl.getStyleClass().add("muted-label");
+            dirLbl.setStyle("-fx-font-size: 11.5px;");
+
+            Region spacer = new Region();
+            HBox.setHgrow(spacer, Priority.ALWAYS);
+
+            HBox row = new HBox(10, fileIcon, nameLbl, spacer, dirLbl);
+            row.setAlignment(Pos.CENTER_LEFT);
+            row.setPadding(new Insets(8, 12, 8, 12));
+            row.getStyleClass().add("welcome-card");
+            row.setOnMouseClicked(e -> openAnySupportedFile(f));
+            listContainer.getChildren().add(row);
+        }
+
+        if (!listContainer.getChildren().isEmpty()) {
+            welcomeRecentBox.getChildren().addAll(sectionTitle, listContainer);
+        }
+    }
+
+    private void showWelcomeScreen(boolean show) {
+        if (welcomeScrollPane == null) return;
+        welcomeScrollPane.setVisible(show);
+        welcomeScrollPane.setManaged(show);
+        if (show) {
+            refreshWelcomeRecentFiles();
+        }
+    }
+
+    // ── Guided Mode Banner ───────────────────────────────────────────────────
+
+    private HBox buildGuidedBanner() {
+        guidedBannerLabel = new Label("");
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        Button doneBtn = new Button("Done");
+        doneBtn.getStyleClass().add("surface-button");
+        doneBtn.setOnAction(e -> {
+            segViewBtn.setSelected(true);
+            switchWorkspaceSegment("VIEW");
+        });
+
+        guidedBanner = new HBox(12, guidedBannerLabel, spacer, doneBtn);
+        guidedBanner.getStyleClass().add("guided-banner");
+        guidedBanner.setAlignment(Pos.CENTER_LEFT);
+        guidedBanner.setPadding(new Insets(5, 14, 5, 14));
+        guidedBanner.setVisible(false);
+        guidedBanner.setManaged(false);
+        return guidedBanner;
+    }
+
+    private void setGuidedBannerMessage(String msg) {
+        if (msg == null || msg.isEmpty()) {
+            guidedBanner.setVisible(false);
+            guidedBanner.setManaged(false);
+        } else {
+            guidedBannerLabel.setText(msg);
+            guidedBanner.setVisible(true);
+            guidedBanner.setManaged(true);
+        }
     }
 
     // ── MenuBar ──────────────────────────────────────────────────────────────
@@ -188,11 +509,13 @@ public class FilzaPdfApplication extends Application {
     private MenuBar buildMenuBar() {
         MenuBar menuBar = new MenuBar();
         menuBar.getMenus().addAll(
-            buildFileMenu(),
-            buildEditMenu(),
-            buildViewMenu(),
-            buildNavigateMenu(),
-            buildHelpMenu()
+                buildFileMenu(),
+                buildEditMenu(),
+                buildPagesAndMergeMenu(),
+                buildWordAndCreateMenu(),
+                buildViewMenu(),
+                buildNavigateMenu(),
+                buildHelpMenu()
         );
         return menuBar;
     }
@@ -200,26 +523,48 @@ public class FilzaPdfApplication extends Application {
     private Menu buildFileMenu() {
         Menu file = new Menu("_File");
 
-        MenuItem open   = new MenuItem("Open…");
+        MenuItem open = new MenuItem("Open…");
         open.setAccelerator(new KeyCodeCombination(KeyCode.O, KeyCombination.CONTROL_DOWN));
-        open.setOnAction(e -> openPdfDialog());
+        open.setOnAction(e -> openPdfOrWordDialog());
 
         recentFilesMenu = new Menu("Open Recent");
         refreshRecentFilesMenu();
 
-        MenuItem close  = new MenuItem("Close");
+        MenuItem save = new MenuItem("Save");
+        save.setAccelerator(new KeyCodeCombination(KeyCode.S, KeyCombination.CONTROL_DOWN));
+        save.setOnAction(e -> saveCurrentPdf());
+
+        MenuItem saveAs = new MenuItem("Save As…");
+        saveAs.setAccelerator(new KeyCodeCombination(KeyCode.S, KeyCombination.CONTROL_DOWN, KeyCombination.SHIFT_DOWN));
+        saveAs.setOnAction(e -> saveCurrentPdfAs());
+
+        MenuItem exportWord = new MenuItem("Export PDF to Word (.docx)…");
+        exportWord.setOnAction(e -> exportCurrentPdfToWord());
+
+        MenuItem exportImages = new MenuItem("Export Pages as PNG…");
+        exportImages.setOnAction(e -> exportPagesToImagesDialog());
+
+        MenuItem close = new MenuItem("Close Document");
         close.setOnAction(e -> closeDocument());
 
-        MenuItem props  = new MenuItem("Document Properties…");
+        MenuItem props = new MenuItem("Document Properties…");
         props.setOnAction(e -> showDocumentProperties());
 
-        MenuItem quit   = new MenuItem("Quit");
+        MenuItem quit = new MenuItem("Quit");
         quit.setAccelerator(new KeyCodeCombination(KeyCode.Q, KeyCombination.CONTROL_DOWN));
         quit.setOnAction(e -> primaryStage.close());
 
-        file.getItems().addAll(open, recentFilesMenu, close,
-                new SeparatorMenuItem(), props,
-                new SeparatorMenuItem(), quit);
+        file.getItems().addAll(
+                open, recentFilesMenu,
+                new SeparatorMenuItem(),
+                save, saveAs,
+                new SeparatorMenuItem(),
+                exportWord, exportImages,
+                new SeparatorMenuItem(),
+                props, close,
+                new SeparatorMenuItem(),
+                quit
+        );
         return file;
     }
 
@@ -228,18 +573,131 @@ public class FilzaPdfApplication extends Application {
 
         MenuItem undo = new MenuItem("Undo");
         undo.setAccelerator(new KeyCodeCombination(KeyCode.Z, KeyCombination.CONTROL_DOWN));
-        undo.setOnAction(e -> { annotationManager.undo(); refreshAnnotationButtons(); });
+        undo.setOnAction(e -> { annotationManager.undo(); controller.redrawAllOverlays(); refreshAnnotationButtons(); });
 
         MenuItem redo = new MenuItem("Redo");
         redo.setAccelerator(new KeyCodeCombination(KeyCode.Y, KeyCombination.CONTROL_DOWN));
-        redo.setOnAction(e -> { annotationManager.redo(); refreshAnnotationButtons(); });
+        redo.setOnAction(e -> { annotationManager.redo(); controller.redrawAllOverlays(); refreshAnnotationButtons(); });
 
         MenuItem find = new MenuItem("Find…");
         find.setAccelerator(new KeyCodeCombination(KeyCode.F, KeyCombination.CONTROL_DOWN));
         find.setOnAction(e -> showSearchBar());
 
-        edit.getItems().addAll(undo, redo, new SeparatorMenuItem(), find);
+        MenuItem editPdfText = new MenuItem("Edit PDF Text & Fonts");
+        editPdfText.setAccelerator(new KeyCodeCombination(KeyCode.E, KeyCombination.CONTROL_DOWN));
+        editPdfText.setOnAction(e -> {
+            segEditBtn.setSelected(true);
+            switchWorkspaceSegment("EDIT");
+        });
+
+        MenuItem addNewText = new MenuItem("Add Text on Page");
+        addNewText.setAccelerator(new KeyCodeCombination(KeyCode.T, KeyCombination.CONTROL_DOWN));
+        addNewText.setOnAction(e -> {
+            segEditBtn.setSelected(true);
+            switchWorkspaceSegment("EDIT");
+            addTextModeBtn.setSelected(true);
+            activateInteractionMode(InteractionMode.ADD_NEW_TEXT, null);
+        });
+
+        MenuItem clearAnnots = new MenuItem("Clear Annotations");
+        clearAnnots.setOnAction(e -> {
+            annotationManager.clear();
+            controller.redrawAllOverlays();
+            refreshAnnotationButtons();
+        });
+
+        edit.getItems().addAll(
+                undo, redo,
+                new SeparatorMenuItem(),
+                find,
+                new SeparatorMenuItem(),
+                editPdfText, addNewText, clearAnnots
+        );
         return edit;
+    }
+
+    private Menu buildPagesAndMergeMenu() {
+        Menu pages = new Menu("_Pages");
+
+        MenuItem mergeStudio = new MenuItem("Merge & Compose PDFs…");
+        mergeStudio.setAccelerator(new KeyCodeCombination(KeyCode.M, KeyCombination.CONTROL_DOWN));
+        mergeStudio.setOnAction(e -> openPdfMergerStudio());
+
+        MenuItem addImgPages = new MenuItem("Insert Image(s) as PDF Pages…");
+        addImgPages.setOnAction(e -> quickUploadImagesAsPages());
+
+        MenuItem rotateCw = new MenuItem("Rotate Page 90° CW");
+        rotateCw.setOnAction(e -> rotateCurrentPage(90));
+
+        MenuItem rotateCcw = new MenuItem("Rotate Page 90° CCW");
+        rotateCcw.setOnAction(e -> rotateCurrentPage(-90));
+
+        MenuItem rotateAll = new MenuItem("Rotate All Pages 90° CW");
+        rotateAll.setOnAction(e -> {
+            if (!controller.hasDocument()) return;
+            toolboxService.rotateAllPages(controller.getDocument(), 90);
+            controller.refreshDocumentAfterEdit();
+        });
+
+        MenuItem insertBlank = new MenuItem("Insert Blank Page");
+        insertBlank.setOnAction(e -> insertBlankPageAfterCurrent());
+
+        MenuItem deletePage = new MenuItem("Delete Current Page");
+        deletePage.setOnAction(e -> deleteCurrentPage());
+
+        MenuItem extractPages = new MenuItem("Extract Pages to PDF…");
+        extractPages.setOnAction(e -> extractPagesDialog());
+
+        MenuItem watermark = new MenuItem("Add Watermark…");
+        watermark.setOnAction(e -> addWatermarkDialog());
+
+        MenuItem pageNums = new MenuItem("Add Page Numbers");
+        pageNums.setOnAction(e -> addPageNumbersToDocument());
+
+        MenuItem encrypt = new MenuItem("Password Protect PDF…");
+        encrypt.setOnAction(e -> encryptPdfDialog());
+
+        pages.getItems().addAll(
+                mergeStudio, addImgPages,
+                new SeparatorMenuItem(),
+                rotateCw, rotateCcw, rotateAll,
+                new SeparatorMenuItem(),
+                insertBlank, deletePage, extractPages,
+                new SeparatorMenuItem(),
+                watermark, pageNums, encrypt
+        );
+        return pages;
+    }
+
+    private Menu buildWordAndCreateMenu() {
+        Menu create = new Menu("_Studio");
+
+        MenuItem newWordDoc = new MenuItem("New Document (Word Studio)…");
+        newWordDoc.setAccelerator(new KeyCodeCombination(KeyCode.N, KeyCombination.CONTROL_DOWN));
+        newWordDoc.setOnAction(e -> openWordStudio(null));
+
+        MenuItem openWordDoc = new MenuItem("Open Word (.docx)…");
+        openWordDoc.setOnAction(e -> promptAndOpenWordFile());
+
+        MenuItem quickWordToPdf = new MenuItem("Convert Word (.docx) to PDF…");
+        quickWordToPdf.setOnAction(e -> directConvertWordToPdf());
+
+        MenuItem imagesToPdf = new MenuItem("Images to PDF…");
+        imagesToPdf.setOnAction(e -> openImageToPdfStudio());
+
+        MenuItem pdfToWord = new MenuItem("Export PDF to Word (.docx)…");
+        pdfToWord.setOnAction(e -> exportCurrentPdfToWord());
+
+        create.getItems().addAll(
+                newWordDoc,
+                openWordDoc,
+                quickWordToPdf,
+                new SeparatorMenuItem(),
+                imagesToPdf,
+                new SeparatorMenuItem(),
+                pdfToWord
+        );
+        return create;
     }
 
     private Menu buildViewMenu() {
@@ -263,19 +721,22 @@ public class FilzaPdfApplication extends Application {
         MenuItem fitPage = new MenuItem("Fit Page");
         fitPage.setOnAction(e -> controller.setFitPage());
 
-        CheckMenuItem darkTheme = new CheckMenuItem("Dark Theme");
-        darkTheme.setSelected("dark".equals(viewerPreferences.getTheme()));
-        darkTheme.setOnAction(e -> {
-            themeService.applyTheme(darkTheme.isSelected() ? "dark" : "light");
-        });
+        CheckMenuItem toggleInspector = new CheckMenuItem("Text & Font Inspector");
+        toggleInspector.setOnAction(e -> showTextInspectorPane(toggleInspector.isSelected()));
+
+        MenuItem switchTheme = new MenuItem("Toggle Dark / Light Theme");
+        switchTheme.setOnAction(e -> themeService.toggleTheme());
 
         MenuItem fullscreen = new MenuItem("Fullscreen");
         fullscreen.setAccelerator(new KeyCodeCombination(KeyCode.F11));
         fullscreen.setOnAction(e -> primaryStage.setFullScreen(!primaryStage.isFullScreen()));
 
-        view.getItems().addAll(zoomIn, zoomOut, resetZoom, new SeparatorMenuItem(),
+        view.getItems().addAll(
+                zoomIn, zoomOut, resetZoom, new SeparatorMenuItem(),
                 fitWidth, fitPage, new SeparatorMenuItem(),
-                darkTheme, new SeparatorMenuItem(), fullscreen);
+                toggleInspector, switchTheme, new SeparatorMenuItem(),
+                fullscreen
+        );
         return view;
     }
 
@@ -308,45 +769,62 @@ public class FilzaPdfApplication extends Application {
     }
 
     private Menu buildHelpMenu() {
-        Menu help = new Menu("_Help");
-        MenuItem about = new MenuItem("About FilzaPDF");
+        Menu help = new Menu("_About");
+        MenuItem about = new MenuItem("About FilzaPDF — Our Story");
         about.setOnAction(e -> showAboutDialog());
         help.getItems().add(about);
         return help;
     }
 
-    // ── Toolbar ──────────────────────────────────────────────────────────────
+    // ── Primary Studio Command Bar ───────────────────────────────────────────
 
-    private HBox buildToolbar() {
-        Button openButton   = new Button("Open");
-        openButton.setTooltip(new Tooltip("Open PDF (Ctrl+O)"));
-        openButton.setOnAction(e -> openPdfDialog());
+    private HBox buildMainToolbar() {
+        homeButton = new Button("", SvgIcons.icon(SvgIcons.HOME, 14));
+        homeButton.setTooltip(new Tooltip("Home Launchpad"));
+        homeButton.setOnAction(e -> showWelcomeScreen(!welcomeScrollPane.isVisible() || !controller.hasDocument()));
 
-        previousButton = new Button("◀");
+        Button openButton = new Button("Open", SvgIcons.icon(SvgIcons.FOLDER_OPEN, 14));
+        openButton.getStyleClass().add("accent-button");
+        openButton.setGraphicTextGap(6);
+        openButton.setTooltip(new Tooltip("Open PDF, Word (.docx), or Images (Ctrl+O)"));
+        openButton.setOnAction(e -> openPdfOrWordDialog());
+
+        saveButton = new Button("Save", SvgIcons.icon(SvgIcons.SAVE, 14));
+        saveButton.setGraphicTextGap(6);
+        saveButton.setTooltip(new Tooltip("Save PDF (Ctrl+S)"));
+        saveButton.setOnAction(e -> saveCurrentPdf());
+
+        saveAsButton = new Button("Save As");
+        saveAsButton.setTooltip(new Tooltip("Save PDF As (Ctrl+Shift+S)"));
+        saveAsButton.setOnAction(e -> saveCurrentPdfAs());
+
+        previousButton = new Button("", SvgIcons.icon(SvgIcons.CHEVRON_LEFT, 13));
         previousButton.setTooltip(new Tooltip("Previous Page (←)"));
         previousButton.setOnAction(e -> controller.previousPage());
 
-        nextButton = new Button("▶");
+        nextButton = new Button("", SvgIcons.icon(SvgIcons.CHEVRON_RIGHT, 13));
         nextButton.setTooltip(new Tooltip("Next Page (→)"));
         nextButton.setOnAction(e -> controller.nextPage());
 
         pageField = new TextField();
-        pageField.setPrefWidth(52);
-        pageField.setPromptText("Page");
+        pageField.setPrefWidth(42);
+        pageField.setAlignment(Pos.CENTER);
+        pageField.setPromptText("—");
         pageField.setFocusTraversable(false);
         pageField.setOnAction(e -> jumpToPage());
 
-        pageLabel = new Label("of 0");
+        pageLabel = new Label("/ 0");
+        pageLabel.getStyleClass().add("muted-label");
 
-        zoomOutButton = new Button("−");
+        zoomOutButton = new Button("", SvgIcons.icon(SvgIcons.MINUS, 13));
         zoomOutButton.setTooltip(new Tooltip("Zoom Out (-)"));
         zoomOutButton.setOnAction(e -> controller.zoomOut());
 
         zoomLabel = new Label("100%");
-        zoomLabel.setMinWidth(46);
+        zoomLabel.setMinWidth(42);
         zoomLabel.setAlignment(Pos.CENTER);
 
-        zoomInButton = new Button("+");
+        zoomInButton = new Button("", SvgIcons.icon(SvgIcons.PLUS, 13));
         zoomInButton.setTooltip(new Tooltip("Zoom In (+)"));
         zoomInButton.setOnAction(e -> controller.zoomIn());
 
@@ -358,68 +836,442 @@ public class FilzaPdfApplication extends Application {
         fitPageButton.setTooltip(new Tooltip("Fit Page (P)"));
         fitPageButton.setOnAction(e -> controller.setFitPage());
 
-        resetZoomButton = new Button("100%");
-        resetZoomButton.setTooltip(new Tooltip("Reset Zoom (Ctrl+0)"));
+        resetZoomButton = new Button("1:1");
+        resetZoomButton.setTooltip(new Tooltip("Actual Size 100% (Ctrl+0)"));
         resetZoomButton.setOnAction(e -> controller.resetZoom());
 
-        undoButton = new Button("↩");
-        undoButton.setTooltip(new Tooltip("Undo Annotation (Ctrl+Z)"));
-        undoButton.setOnAction(e -> { annotationManager.undo(); refreshAnnotationButtons(); });
+        // Segmented Workspace Mode Bar (View | Edit PDF | Markup | Organize)
+        workspaceSegmentGroup = new ToggleGroup();
+        segViewBtn = new ToggleButton("View");
+        segViewBtn.setToggleGroup(workspaceSegmentGroup);
+        segViewBtn.setSelected(true);
+        segViewBtn.setOnAction(e -> switchWorkspaceSegment("VIEW"));
 
-        redoButton = new Button("↪");
-        redoButton.setTooltip(new Tooltip("Redo Annotation (Ctrl+Y)"));
-        redoButton.setOnAction(e -> { annotationManager.redo(); refreshAnnotationButtons(); });
+        segEditBtn = new ToggleButton("Edit PDF");
+        segEditBtn.setToggleGroup(workspaceSegmentGroup);
+        segEditBtn.setOnAction(e -> switchWorkspaceSegment("EDIT"));
 
-        HBox toolbar = new HBox(6,
-            openButton,
-            new Separator(javafx.geometry.Orientation.VERTICAL),
-            previousButton, nextButton,
-            pageField, pageLabel,
-            new Separator(javafx.geometry.Orientation.VERTICAL),
-            zoomOutButton, zoomLabel, zoomInButton,
-            fitWidthButton, fitPageButton, resetZoomButton,
-            new Separator(javafx.geometry.Orientation.VERTICAL),
-            undoButton, redoButton
+        segMarkupBtn = new ToggleButton("Markup");
+        segMarkupBtn.setToggleGroup(workspaceSegmentGroup);
+        segMarkupBtn.setOnAction(e -> switchWorkspaceSegment("MARKUP"));
+
+        segOrganizeBtn = new ToggleButton("Organize");
+        segOrganizeBtn.setToggleGroup(workspaceSegmentGroup);
+        segOrganizeBtn.setOnAction(e -> switchWorkspaceSegment("ORGANIZE"));
+
+        HBox segmentedBox = new HBox(2, segViewBtn, segEditBtn, segMarkupBtn, segOrganizeBtn);
+        segmentedBox.getStyleClass().add("segmented-bar");
+        segmentedBox.setAlignment(Pos.CENTER);
+
+        Region spacer = new Region();
+        HBox.setHgrow(spacer, Priority.ALWAYS);
+
+        // Right Studio Quick Actions
+        Button mergeStudioBtn = new Button("Merge", SvgIcons.icon(SvgIcons.MERGE, 13));
+        mergeStudioBtn.getStyleClass().add("surface-button");
+        mergeStudioBtn.setGraphicTextGap(5);
+        mergeStudioBtn.setTooltip(new Tooltip("Merge & Compose PDFs (Ctrl+M)"));
+        mergeStudioBtn.setOnAction(e -> openPdfMergerStudio());
+
+        Button imgToPdfBtn = new Button("Images", SvgIcons.icon(SvgIcons.IMAGE, 13));
+        imgToPdfBtn.getStyleClass().add("surface-button");
+        imgToPdfBtn.setGraphicTextGap(5);
+        imgToPdfBtn.setTooltip(new Tooltip("Create or Insert PDF Pages from Images"));
+        imgToPdfBtn.setOnAction(e -> openImageToPdfStudio());
+
+        Button wordStudioBtn = new Button("Word", SvgIcons.icon(SvgIcons.FILE_TEXT, 13));
+        wordStudioBtn.getStyleClass().add("surface-button");
+        wordStudioBtn.setGraphicTextGap(5);
+        wordStudioBtn.setTooltip(new Tooltip("Create or Edit .docx Documents & Export to PDF (Ctrl+N)"));
+        wordStudioBtn.setOnAction(e -> openWordStudio(null));
+
+        exportWordButton = new Button(".docx");
+        exportWordButton.getStyleClass().add("surface-button");
+        exportWordButton.setTooltip(new Tooltip("Export Current PDF to Microsoft Word (.docx)"));
+        exportWordButton.setOnAction(e -> exportCurrentPdfToWord());
+
+        Button aboutTopBtn = new Button("About", SvgIcons.icon(SvgIcons.INFO, 13));
+        aboutTopBtn.getStyleClass().add("surface-button");
+        aboutTopBtn.setGraphicTextGap(5);
+        aboutTopBtn.setTooltip(new Tooltip("About FilzaPDF — Why I Built This & Our Vision"));
+        aboutTopBtn.setOnAction(e -> showAboutDialog());
+
+        themeToggleButton = new Button("", SvgIcons.icon(SvgIcons.THEME, 14));
+        themeToggleButton.setTooltip(new Tooltip("Toggle Dark / Light Theme"));
+        themeToggleButton.setOnAction(e -> themeService.toggleTheme());
+
+        HBox toolbar = new HBox(5,
+                homeButton, openButton, saveButton, saveAsButton,
+                new Separator(Orientation.VERTICAL),
+                previousButton, pageField, pageLabel, nextButton,
+                new Separator(Orientation.VERTICAL),
+                zoomOutButton, zoomLabel, zoomInButton, fitWidthButton, fitPageButton, resetZoomButton,
+                new Separator(Orientation.VERTICAL),
+                segmentedBox,
+                spacer,
+                mergeStudioBtn, imgToPdfBtn, wordStudioBtn, exportWordButton,
+                new Separator(Orientation.VERTICAL),
+                aboutTopBtn, themeToggleButton
         );
+        toolbar.getStyleClass().add("toolbar-row");
         toolbar.setAlignment(Pos.CENTER_LEFT);
-        toolbar.setPadding(new Insets(4, 8, 4, 8));
-
-        setViewerControlsEnabled(false);
+        toolbar.setPadding(new Insets(6, 10, 6, 10));
         return toolbar;
+    }
+
+    // ── Contextual Sub-Bar (Only visible when Edit PDF, Markup, or Organize is selected) ──
+
+    private HBox buildContextualSubBar() {
+        modeToggleGroup = new ToggleGroup();
+
+        browseModeBtn = new ToggleButton("Select / Pan", SvgIcons.icon(SvgIcons.CURSOR, 13));
+        browseModeBtn.setToggleGroup(modeToggleGroup);
+        browseModeBtn.setSelected(true);
+        browseModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.VIEW_BROWSE, null));
+
+        // 1. Edit PDF Sub-Group
+        editTextModeBtn = new ToggleButton("Recognize & Edit Text", SvgIcons.icon(SvgIcons.TEXT_EDIT, 13));
+        editTextModeBtn.setGraphicTextGap(6);
+        editTextModeBtn.setToggleGroup(modeToggleGroup);
+        editTextModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.EDIT_PDF_TEXT, null));
+
+        addTextModeBtn = new ToggleButton("Insert Text Block", SvgIcons.icon(SvgIcons.PLUS, 13));
+        addTextModeBtn.setGraphicTextGap(5);
+        addTextModeBtn.setToggleGroup(modeToggleGroup);
+        addTextModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.ADD_NEW_TEXT, null));
+
+        placeImageModeBtn = new ToggleButton("Place Image on Page", SvgIcons.icon(SvgIcons.IMAGE, 13));
+        placeImageModeBtn.setGraphicTextGap(5);
+        placeImageModeBtn.setToggleGroup(modeToggleGroup);
+        placeImageModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.INSERT_IMAGE, null));
+
+        editSubGroup = new HBox(6, editTextModeBtn, addTextModeBtn, placeImageModeBtn);
+        editSubGroup.setAlignment(Pos.CENTER_LEFT);
+
+        // 2. Markup Sub-Group
+        highlightModeBtn = new ToggleButton("Highlight", SvgIcons.icon(SvgIcons.HIGHLIGHT, 13));
+        highlightModeBtn.setGraphicTextGap(5);
+        highlightModeBtn.setToggleGroup(modeToggleGroup);
+        highlightModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.ANNOTATE, AnnotationType.HIGHLIGHT));
+
+        underlineModeBtn = new ToggleButton("Underline");
+        underlineModeBtn.setToggleGroup(modeToggleGroup);
+        underlineModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.ANNOTATE, AnnotationType.UNDERLINE));
+
+        strikeModeBtn = new ToggleButton("Strikethrough");
+        strikeModeBtn.setToggleGroup(modeToggleGroup);
+        strikeModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.ANNOTATE, AnnotationType.STRIKETHROUGH));
+
+        freehandModeBtn = new ToggleButton("Freehand Ink", SvgIcons.icon(SvgIcons.PEN, 13));
+        freehandModeBtn.setGraphicTextGap(5);
+        freehandModeBtn.setToggleGroup(modeToggleGroup);
+        freehandModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.ANNOTATE, AnnotationType.FREEHAND));
+
+        rectModeBtn = new ToggleButton("Rectangle");
+        rectModeBtn.setToggleGroup(modeToggleGroup);
+        rectModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.ANNOTATE, AnnotationType.RECTANGLE));
+
+        redactModeBtn = new ToggleButton("Redact");
+        redactModeBtn.setToggleGroup(modeToggleGroup);
+        redactModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.ANNOTATE, AnnotationType.REDACT));
+
+        noteModeBtn = new ToggleButton("Sticky Note");
+        noteModeBtn.setToggleGroup(modeToggleGroup);
+        noteModeBtn.setOnAction(e -> activateInteractionMode(InteractionMode.ANNOTATE, AnnotationType.NOTE));
+
+        annotColorPicker = new ColorPicker(Color.web("#7C66DC"));
+        annotColorPicker.setPrefWidth(82);
+        annotColorPicker.setTooltip(new Tooltip("Markup Color"));
+        annotColorPicker.setOnAction(e -> controller.setActiveAnnotationColor(toHex(annotColorPicker.getValue())));
+        controller.setActiveAnnotationColor("#7C66DC");
+
+        undoButton = new Button("Undo", SvgIcons.icon(SvgIcons.UNDO, 13));
+        undoButton.setGraphicTextGap(4);
+        undoButton.setOnAction(e -> {
+            annotationManager.undo();
+            controller.redrawAllOverlays();
+            refreshAnnotationButtons();
+        });
+
+        redoButton = new Button("Redo", SvgIcons.icon(SvgIcons.REDO, 13));
+        redoButton.setGraphicTextGap(4);
+        redoButton.setOnAction(e -> {
+            annotationManager.redo();
+            controller.redrawAllOverlays();
+            refreshAnnotationButtons();
+        });
+
+        markupSubGroup = new HBox(6,
+                highlightModeBtn, underlineModeBtn, strikeModeBtn, freehandModeBtn,
+                rectModeBtn, redactModeBtn, noteModeBtn,
+                new Separator(Orientation.VERTICAL),
+                annotColorPicker, undoButton, redoButton
+        );
+        markupSubGroup.setAlignment(Pos.CENTER_LEFT);
+
+        // 3. Organize Pages Sub-Group
+        addImagePagesBtn = new Button("Insert Image Page(s)", SvgIcons.icon(SvgIcons.IMAGE, 13));
+        addImagePagesBtn.setGraphicTextGap(5);
+        addImagePagesBtn.setOnAction(e -> quickUploadImagesAsPages());
+
+        insertBlankBtn = new Button("Insert Blank Page", SvgIcons.icon(SvgIcons.PLUS, 13));
+        insertBlankBtn.setGraphicTextGap(5);
+        insertBlankBtn.setOnAction(e -> insertBlankPageAfterCurrent());
+
+        rotateCwBtn = new Button("Rotate 90°", SvgIcons.icon(SvgIcons.ROTATE, 13));
+        rotateCwBtn.setGraphicTextGap(5);
+        rotateCwBtn.setOnAction(e -> rotateCurrentPage(90));
+
+        deletePageBtn = new Button("Delete Page", SvgIcons.icon(SvgIcons.TRASH, 13));
+        deletePageBtn.setGraphicTextGap(5);
+        deletePageBtn.setOnAction(e -> deleteCurrentPage());
+
+        Button extractBtn = new Button("Extract Range…");
+        extractBtn.setOnAction(e -> extractPagesDialog());
+
+        watermarkBtn = new Button("Watermark…");
+        watermarkBtn.setOnAction(e -> addWatermarkDialog());
+
+        pageNumsBtn = new Button("Number Pages");
+        pageNumsBtn.setOnAction(e -> addPageNumbersToDocument());
+
+        Button encryptBtn = new Button("Encrypt PDF…");
+        encryptBtn.setOnAction(e -> encryptPdfDialog());
+
+        organizeSubGroup = new HBox(6,
+                addImagePagesBtn, insertBlankBtn, rotateCwBtn, deletePageBtn,
+                new Separator(Orientation.VERTICAL),
+                extractBtn, watermarkBtn, pageNumsBtn, encryptBtn
+        );
+        organizeSubGroup.setAlignment(Pos.CENTER_LEFT);
+
+        contextualSubBar = new HBox(8);
+        contextualSubBar.getStyleClass().add("ribbon-row");
+        contextualSubBar.setAlignment(Pos.CENTER_LEFT);
+        contextualSubBar.setPadding(new Insets(5, 14, 5, 14));
+        contextualSubBar.setVisible(false);
+        contextualSubBar.setManaged(false);
+        return contextualSubBar;
+    }
+
+    private void switchWorkspaceSegment(String segment) {
+        if (workspaceSegmentGroup.getSelectedToggle() == null) {
+            segViewBtn.setSelected(true);
+            segment = "VIEW";
+        }
+        contextualSubBar.getChildren().clear();
+
+        switch (segment) {
+            case "EDIT" -> {
+                contextualSubBar.getChildren().add(editSubGroup);
+                contextualSubBar.setVisible(true);
+                contextualSubBar.setManaged(true);
+                editTextModeBtn.setSelected(true);
+                activateInteractionMode(InteractionMode.EDIT_PDF_TEXT, null);
+            }
+            case "MARKUP" -> {
+                contextualSubBar.getChildren().add(markupSubGroup);
+                contextualSubBar.setVisible(true);
+                contextualSubBar.setManaged(true);
+                highlightModeBtn.setSelected(true);
+                activateInteractionMode(InteractionMode.ANNOTATE, AnnotationType.HIGHLIGHT);
+            }
+            case "ORGANIZE" -> {
+                contextualSubBar.getChildren().add(organizeSubGroup);
+                contextualSubBar.setVisible(true);
+                contextualSubBar.setManaged(true);
+                browseModeBtn.setSelected(true);
+                activateInteractionMode(InteractionMode.VIEW_BROWSE, null);
+            }
+            default -> {
+                contextualSubBar.setVisible(false);
+                contextualSubBar.setManaged(false);
+                browseModeBtn.setSelected(true);
+                activateInteractionMode(InteractionMode.VIEW_BROWSE, null);
+            }
+        }
+    }
+
+    private void activateInteractionMode(InteractionMode mode, AnnotationType annotType) {
+        if (annotType != null) {
+            controller.setActiveAnnotationType(annotType);
+        }
+        controller.setInteractionMode(mode);
+
+        if (mode == InteractionMode.EDIT_PDF_TEXT) {
+            showTextInspectorPane(true);
+            textInspectorPane.refreshForCurrentPage();
+            statusModeLabel.setText("Edit Text & Fonts");
+            setGuidedBannerMessage("Select any highlighted text block on the page to inspect or modify its text, font family, size, or color.");
+        } else {
+            showTextInspectorPane(false);
+            if (mode == InteractionMode.VIEW_BROWSE) {
+                statusModeLabel.setText("View");
+                setGuidedBannerMessage(null);
+            } else if (mode == InteractionMode.ADD_NEW_TEXT) {
+                statusModeLabel.setText("Insert Text");
+                setGuidedBannerMessage("Click anywhere on a page to insert a new styled text block at that position.");
+            } else if (mode == InteractionMode.INSERT_IMAGE) {
+                statusModeLabel.setText("Place Image");
+                setGuidedBannerMessage("Click anywhere on a page to place an image or signature.");
+            } else if (mode == InteractionMode.ANNOTATE) {
+                statusModeLabel.setText("Markup: " + controller.getActiveAnnotationType());
+                String hint = controller.getActiveAnnotationType() == AnnotationType.NOTE
+                        ? "Click on any page to place a note annotation."
+                        : "Click and drag across the page to apply " + controller.getActiveAnnotationType().name().toLowerCase() + " markup.";
+                setGuidedBannerMessage(hint);
+            }
+        }
+    }
+
+    private void showTextInspectorPane(boolean show) {
+        if (rootPane == null) return;
+        if (show) {
+            rootPane.setRight(textInspectorPane);
+            textInspectorPane.refreshForCurrentPage();
+        } else {
+            rootPane.setRight(null);
+        }
+    }
+
+    private void onRecognizedTextBlockSelected(RecognizedTextBlock block) {
+        showTextInspectorPane(true);
+        textInspectorPane.selectBlock(block);
+    }
+
+    private void onPageCoordinateClicked(PageCoordinateClick click) {
+        if (!controller.hasDocument()) return;
+        if (controller.getInteractionMode() == InteractionMode.ADD_NEW_TEXT) {
+            promptAddNewTextAt(click.pageIndex(), click.pagePtX(), click.pagePtY());
+        } else if (controller.getInteractionMode() == InteractionMode.INSERT_IMAGE) {
+            promptInsertImageAt(click.pageIndex(), click.pagePtX(), click.pagePtY());
+        }
+    }
+
+    private void promptAddNewTextAt(int pageIndex, float xPt, float yPt) {
+        Dialog<Boolean> dialog = new Dialog<>();
+        dialog.initOwner(primaryStage);
+        dialog.setTitle("Insert Text — Page " + (pageIndex + 1));
+        dialog.setHeaderText(String.format("Position: (%.0f, %.0f) pt", xPt, yPt));
+
+        ButtonType insertBtnType = new ButtonType("Insert", ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(insertBtnType, ButtonType.CANCEL);
+
+        TextArea textInput = new TextArea();
+        textInput.setPromptText("Enter text…");
+        textInput.setPrefRowCount(3);
+
+        ComboBox<String> fontCombo = new ComboBox<>(FXCollections.observableArrayList("Helvetica", "Times", "Courier"));
+        fontCombo.setValue("Helvetica");
+
+        Spinner<Double> sizeSpin = new Spinner<>(6.0, 96.0, 14.0, 1.0);
+        CheckBox boldCb = new CheckBox("Bold");
+        CheckBox italicCb = new CheckBox("Italic");
+        ColorPicker colorPick = new ColorPicker(Color.BLACK);
+
+        GridPane grid = new GridPane();
+        grid.setHgap(10);
+        grid.setVgap(8);
+        grid.add(new Label("Text:"), 0, 0);
+        grid.add(textInput, 1, 0, 3, 1);
+        grid.add(new Label("Font:"), 0, 1);
+        grid.add(fontCombo, 1, 1);
+        grid.add(new Label("Size (pt):"), 2, 1);
+        grid.add(sizeSpin, 3, 1);
+        grid.add(boldCb, 1, 2);
+        grid.add(italicCb, 2, 2);
+        grid.add(colorPick, 3, 2);
+
+        dialog.getDialogPane().setContent(grid);
+        dialog.setResultConverter(btn -> btn == insertBtnType);
+
+        Optional<Boolean> res = dialog.showAndWait();
+        if (res.isPresent() && res.get() && !textInput.getText().trim().isEmpty()) {
+            try {
+                textEditorService.addTextToPage(
+                        controller.getDocument(),
+                        pageIndex,
+                        textInput.getText(),
+                        xPt,
+                        yPt,
+                        fontCombo.getValue(),
+                        boldCb.isSelected(),
+                        italicCb.isSelected(),
+                        sizeSpin.getValue().floatValue(),
+                        toHex(colorPick.getValue())
+                );
+                controller.refreshDocumentAfterEdit();
+            } catch (Exception ex) {
+                showErrorDialog("Insert Text Failed", "Could not add text to page.", ex.getMessage());
+            }
+        }
+    }
+
+    private void promptInsertImageAt(int pageIndex, float xPt, float yPt) {
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Select Image to Place on Page " + (pageIndex + 1));
+        fc.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("Images", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif")
+        );
+        File imgFile = fc.showOpenDialog(primaryStage);
+        if (imgFile == null) return;
+
+        TextInputDialog sizeDialog = new TextInputDialog("180x120");
+        sizeDialog.initOwner(primaryStage);
+        sizeDialog.setTitle("Image Dimensions");
+        sizeDialog.setHeaderText("Width x Height in points (e.g. 180x120):");
+        sizeDialog.showAndWait().ifPresent(dimStr -> {
+            float w = 180f;
+            float h = 120f;
+            try {
+                String[] parts = dimStr.toLowerCase().split("x");
+                if (parts.length == 2) {
+                    w = Float.parseFloat(parts[0].trim());
+                    h = Float.parseFloat(parts[1].trim());
+                }
+            } catch (Exception ignored) {}
+            try {
+                textEditorService.addImageToPage(controller.getDocument(), pageIndex, imgFile, xPt, yPt, w, h);
+                controller.refreshDocumentAfterEdit();
+            } catch (Exception ex) {
+                showErrorDialog("Place Image Failed", "Could not embed image onto page.", ex.getMessage());
+            }
+        });
     }
 
     // ── Search bar ───────────────────────────────────────────────────────────
 
     private HBox buildSearchBar() {
         searchField = new TextField();
-        searchField.setPromptText("Search…");
+        searchField.setPromptText("Find in document…");
         searchField.setPrefWidth(220);
         searchField.setOnAction(e -> performSearch());
 
-        Button searchNext = new Button("▼");
-        searchNext.setTooltip(new Tooltip("Next Result"));
-        searchNext.setOnAction(e -> navigateSearchResult(true));
-
-        Button searchPrev = new Button("▲");
-        searchPrev.setTooltip(new Tooltip("Previous Result"));
+        Button searchPrev = new Button("", SvgIcons.icon(SvgIcons.CHEVRON_LEFT, 12));
+        searchPrev.setTooltip(new Tooltip("Previous Match"));
         searchPrev.setOnAction(e -> navigateSearchResult(false));
 
-        caseSensitiveCheck = new CheckBox("Aa");
-        caseSensitiveCheck.setTooltip(new Tooltip("Case Sensitive"));
+        Button searchNext = new Button("", SvgIcons.icon(SvgIcons.CHEVRON_RIGHT, 12));
+        searchNext.setTooltip(new Tooltip("Next Match"));
+        searchNext.setOnAction(e -> navigateSearchResult(true));
+
+        caseSensitiveCheck = new CheckBox("Match Case");
 
         searchResultLabel = new Label("");
+        searchResultLabel.getStyleClass().add("muted-label");
 
-        Button closeSearch = new Button("✕");
+        Button closeSearch = new Button("Close");
         closeSearch.setOnAction(e -> hideSearchBar());
 
-        searchBar = new HBox(6,
-            new Label("Find:"), searchField,
-            searchPrev, searchNext,
-            caseSensitiveCheck, searchResultLabel,
-            closeSearch
+        searchBar = new HBox(8,
+                SvgIcons.icon(SvgIcons.SEARCH, 13), searchField,
+                searchPrev, searchNext,
+                caseSensitiveCheck, searchResultLabel,
+                closeSearch
         );
+        searchBar.getStyleClass().add("toolbar-row");
         searchBar.setAlignment(Pos.CENTER_LEFT);
-        searchBar.setPadding(new Insets(3, 8, 3, 8));
+        searchBar.setPadding(new Insets(5, 14, 5, 14));
         searchBar.setVisible(false);
         searchBar.setManaged(false);
         return searchBar;
@@ -449,7 +1301,6 @@ public class FilzaPdfApplication extends Application {
         lastSearchResults = searchService.search(query, caseSensitiveCheck.isSelected());
         updateSearchResultLabel();
         if (!lastSearchResults.isEmpty()) {
-            // Navigate to first result's page
             controller.setCurrentPage(lastSearchResults.get(0).getPageIndex());
         }
     }
@@ -468,43 +1319,42 @@ public class FilzaPdfApplication extends Application {
 
     private void updateSearchResultLabel() {
         if (lastSearchResults == null || lastSearchResults.isEmpty()) {
-            searchResultLabel.setText("No results");
+            searchResultLabel.setText("0 matches");
         } else {
-            int idx  = searchService.getCurrentResultIndex() + 1;
+            int idx   = searchService.getCurrentResultIndex() + 1;
             int total = searchService.getResultCount();
-            searchResultLabel.setText(idx + " / " + total);
+            searchResultLabel.setText(idx + " of " + total);
         }
     }
 
     // ── Sidebar ──────────────────────────────────────────────────────────────
 
     private TabPane buildSidebar() {
-        // Thumbnail tab
-        thumbnailContainer = new VBox(10);
+        thumbnailContainer = new VBox(12);
         thumbnailContainer.setAlignment(Pos.TOP_CENTER);
-        thumbnailContainer.setPrefWidth(140);
+        thumbnailContainer.setPadding(new Insets(10, 6, 10, 6));
+        thumbnailContainer.setPrefWidth(148);
 
         ScrollPane thumbScroll = new ScrollPane(thumbnailContainer);
         thumbScroll.setFitToWidth(true);
         thumbScroll.setFocusTraversable(false);
 
-        Tab thumbTab = new Tab("Pages", thumbScroll);
+        Tab thumbTab = new Tab("Thumbnails", thumbScroll);
         thumbTab.setClosable(false);
 
-        // Bookmarks tab
         bookmarkTree = new TreeView<>();
         bookmarkTree.setShowRoot(false);
-        bookmarkTree.setRoot(new TreeItem<>("Bookmarks"));
+        bookmarkTree.setRoot(new TreeItem<>("Outline"));
         bookmarkTree.setOnMouseClicked(e -> {
             if (e.getClickCount() == 2) navigateToBookmark();
         });
 
-        Tab bookmarkTab = new Tab("Bookmarks", bookmarkTree);
+        Tab bookmarkTab = new Tab("Outline", bookmarkTree);
         bookmarkTab.setClosable(false);
 
         TabPane sidebar = new TabPane(thumbTab, bookmarkTab);
-        sidebar.setPrefWidth(160);
-        sidebar.setTabMinWidth(60);
+        sidebar.setPrefWidth(176);
+        sidebar.setTabMinWidth(70);
         return sidebar;
     }
 
@@ -513,15 +1363,16 @@ public class FilzaPdfApplication extends Application {
     private HBox buildStatusBar() {
         statusPageLabel = new Label("No document");
         statusZoomLabel = new Label("");
-        statusDocLabel  = new Label("");
+        statusDocLabel  = new Label("Ready");
+        statusModeLabel = new Label("View");
 
         Region spacer = new Region();
         HBox.setHgrow(spacer, Priority.ALWAYS);
 
-        HBox bar = new HBox(12, statusDocLabel, spacer, statusPageLabel, statusZoomLabel);
+        HBox bar = new HBox(18, statusDocLabel, spacer, statusModeLabel, statusPageLabel, statusZoomLabel);
+        bar.getStyleClass().add("status-bar");
         bar.setAlignment(Pos.CENTER_LEFT);
-        bar.setPadding(new Insets(3, 8, 3, 8));
-        bar.setStyle("-fx-border-color: -fx-box-border; -fx-border-width: 1 0 0 0;");
+        bar.setPadding(new Insets(4, 14, 4, 14));
         return bar;
     }
 
@@ -529,6 +1380,13 @@ public class FilzaPdfApplication extends Application {
 
     private void installAppKeyboardShortcuts(Scene scene) {
         scene.setOnKeyPressed(event -> {
+            if (event.getTarget() instanceof javafx.scene.control.TextInputControl) {
+                if (event.getCode() == KeyCode.ESCAPE && searchBar.isVisible()) {
+                    hideSearchBar();
+                    event.consume();
+                }
+                return;
+            }
             switch (event.getCode()) {
                 case F11:
                     primaryStage.setFullScreen(!primaryStage.isFullScreen());
@@ -537,11 +1395,43 @@ public class FilzaPdfApplication extends Application {
                 case F:
                     if (event.isControlDown()) { showSearchBar(); event.consume(); }
                     break;
+                case S:
+                    if (event.isControlDown() && event.isShiftDown()) {
+                        saveCurrentPdfAs();
+                        event.consume();
+                    } else if (event.isControlDown()) {
+                        saveCurrentPdf();
+                        event.consume();
+                    }
+                    break;
+                case M:
+                    if (event.isControlDown()) { openPdfMergerStudio(); event.consume(); }
+                    break;
+                case N:
+                    if (event.isControlDown()) { openWordStudio(null); event.consume(); }
+                    break;
+                case E:
+                    if (event.isControlDown()) {
+                        segEditBtn.setSelected(true);
+                        switchWorkspaceSegment("EDIT");
+                        event.consume();
+                    }
+                    break;
                 case Z:
-                    if (event.isControlDown()) { annotationManager.undo(); refreshAnnotationButtons(); event.consume(); }
+                    if (event.isControlDown()) {
+                        annotationManager.undo();
+                        controller.redrawAllOverlays();
+                        refreshAnnotationButtons();
+                        event.consume();
+                    }
                     break;
                 case Y:
-                    if (event.isControlDown()) { annotationManager.redo(); refreshAnnotationButtons(); event.consume(); }
+                    if (event.isControlDown()) {
+                        annotationManager.redo();
+                        controller.redrawAllOverlays();
+                        refreshAnnotationButtons();
+                        event.consume();
+                    }
                     break;
                 case W:
                     if (!event.isControlDown()) { controller.setFitWidth(); event.consume(); }
@@ -553,7 +1443,14 @@ public class FilzaPdfApplication extends Application {
                     if (event.isControlDown()) { pageField.requestFocus(); event.consume(); }
                     break;
                 case ESCAPE:
-                    if (searchBar.isVisible()) { hideSearchBar(); event.consume(); }
+                    if (searchBar.isVisible()) {
+                        hideSearchBar();
+                        event.consume();
+                    } else if (controller.getInteractionMode() != InteractionMode.VIEW_BROWSE) {
+                        segViewBtn.setSelected(true);
+                        switchWorkspaceSegment("VIEW");
+                        event.consume();
+                    }
                     break;
                 default:
                     break;
@@ -561,13 +1458,16 @@ public class FilzaPdfApplication extends Application {
         });
     }
 
-    // ── Drag and drop ─────────────────────────────────────────────────────────
+    // ── Drag and drop (PDF, Word .docx, and Images) ──────────────────────────
 
     private void installDragAndDrop(Scene scene) {
         scene.setOnDragOver((DragEvent event) -> {
             Dragboard db = event.getDragboard();
             if (db.hasFiles() && db.getFiles().stream()
-                    .anyMatch(f -> f.getName().toLowerCase().endsWith(".pdf"))) {
+                    .anyMatch(f -> {
+                        String n = f.getName().toLowerCase();
+                        return n.endsWith(".pdf") || n.endsWith(".docx") || ImageToPdfDialog.isSupportedImageFile(f);
+                    })) {
                 event.acceptTransferModes(TransferMode.COPY);
             }
             event.consume();
@@ -577,11 +1477,29 @@ public class FilzaPdfApplication extends Application {
             Dragboard db = event.getDragboard();
             boolean success = false;
             if (db.hasFiles()) {
-                db.getFiles().stream()
-                    .filter(f -> f.getName().toLowerCase().endsWith(".pdf"))
-                    .findFirst()
-                    .ifPresent(this::openFile);
-                success = true;
+                List<File> droppedImages = new ArrayList<>();
+                for (File f : db.getFiles()) {
+                    if (ImageToPdfDialog.isSupportedImageFile(f)) {
+                        droppedImages.add(f);
+                    }
+                }
+                if (!droppedImages.isEmpty()) {
+                    handleSelectedImages(droppedImages);
+                    success = true;
+                } else {
+                    for (File f : db.getFiles()) {
+                        String n = f.getName().toLowerCase();
+                        if (n.endsWith(".pdf")) {
+                            openFile(f);
+                            success = true;
+                            break;
+                        } else if (n.endsWith(".docx")) {
+                            openWordStudio(f);
+                            success = true;
+                            break;
+                        }
+                    }
+                }
             }
             event.setDropCompleted(success);
             event.consume();
@@ -590,71 +1508,245 @@ public class FilzaPdfApplication extends Application {
 
     // ── Document lifecycle ────────────────────────────────────────────────────
 
-    private void openPdfDialog() {
+    private void openPdfOrWordDialog() {
         FileChooser chooser = new FileChooser();
-        chooser.setTitle("Open PDF");
-        chooser.getExtensionFilters().add(
-            new FileChooser.ExtensionFilter("PDF Files", "*.pdf")
+        chooser.setTitle("Open Document or Image");
+        chooser.getExtensionFilters().addAll(
+                new FileChooser.ExtensionFilter(
+                        "All Supported Files (*.pdf, *.docx, *.png, *.jpg, *.jpeg, *.bmp, *.gif)",
+                        "*.pdf", "*.docx", "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif"),
+                new FileChooser.ExtensionFilter("PDF Documents (*.pdf)", "*.pdf"),
+                new FileChooser.ExtensionFilter("Word Documents (*.docx)", "*.docx"),
+                new FileChooser.ExtensionFilter("Images (*.png, *.jpg, *.jpeg, *.bmp, *.gif)",
+                        "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif")
         );
-        File file = chooser.showOpenDialog(primaryStage);
-        if (file != null) openFile(file);
+        List<File> files = chooser.showOpenMultipleDialog(primaryStage);
+        if (files == null || files.isEmpty()) return;
+
+        List<File> images = new ArrayList<>();
+        for (File f : files) {
+            if (ImageToPdfDialog.isSupportedImageFile(f)) {
+                images.add(f);
+            }
+        }
+        if (!images.isEmpty()) {
+            handleSelectedImages(images);
+            return;
+        }
+
+        openAnySupportedFile(files.get(0));
+    }
+
+    private void openAnySupportedFile(File file) {
+        if (file == null || !file.exists()) return;
+        String lower = file.getName().toLowerCase();
+        if (lower.endsWith(".docx") || lower.endsWith(".txt") || lower.endsWith(".md")) {
+            openWordStudio(file);
+        } else if (ImageToPdfDialog.isSupportedImageFile(file)) {
+            handleSelectedImages(List.of(file));
+        } else {
+            openFile(file);
+        }
+    }
+
+    private void handleSelectedImages(List<File> images) {
+        if (images == null || images.isEmpty()) return;
+
+        if (controller.hasDocument()) {
+            ButtonType appendType = new ButtonType("Append to Current PDF", ButtonData.YES);
+            ButtonType newPdfType = new ButtonType("Create New PDF", ButtonData.NO);
+            Alert ask = new Alert(AlertType.CONFIRMATION,
+                    "Append " + images.size() + " image(s) to the current document, or create a new PDF?",
+                    appendType, newPdfType, ButtonType.CANCEL);
+            ask.initOwner(primaryStage);
+            ask.setTitle("Import Images");
+            ask.setHeaderText(null);
+            Optional<ButtonType> choice = ask.showAndWait();
+            if (choice.isEmpty() || choice.get() == ButtonType.CANCEL) return;
+
+            if (choice.get() == appendType) {
+                try {
+                    int prevCount = controller.getModel().getPageCount();
+                    int added = pdfCreatorService.appendImagesAsPages(controller.getDocument(), images, "A4", false, 20f);
+                    if (added > 0) {
+                        showWelcomeScreen(false);
+                        controller.refreshDocumentAfterEdit();
+                        controller.setCurrentPage(prevCount);
+                        statusDocLabel.setText("Appended " + added + " page(s)");
+                    }
+                } catch (Exception e) {
+                    showErrorDialog("Import Failed", "Could not append image pages.", e.getMessage());
+                }
+                return;
+            }
+        }
+
+        try {
+            PDDocument created = pdfCreatorService.createPdfFromImages(images, "A4", false, 20f);
+            String title = images.size() == 1
+                    ? images.get(0).getName().replaceAll("\\.[^.]+$", "") + ".pdf"
+                    : "Untitled_Images.pdf";
+            openInMemoryDocument(created, title);
+        } catch (Exception e) {
+            showErrorDialog("Import Failed", "Could not convert selected images to PDF.", e.getMessage());
+        }
+    }
+
+    private void quickUploadImagesAsPages() {
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Select Images");
+        fc.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("Images (*.png, *.jpg, *.jpeg, *.bmp, *.gif)",
+                        "*.png", "*.jpg", "*.jpeg", "*.bmp", "*.gif")
+        );
+        List<File> files = fc.showOpenMultipleDialog(primaryStage);
+        if (files != null && !files.isEmpty()) {
+            handleSelectedImages(files);
+        }
     }
 
     private void openFile(File file) {
         try {
             saveCurrentFileState();
 
-            if (thumbnailTask != null) thumbnailTask.cancel(true);
+            if (thumbnailTask != null) thumbnailTask.cancel(false);
             controller.closeDocument();
-            searchService.search("", false); // clear results
+            annotationManager.clear();
+            searchService.search("", false);
 
             PDDocument document = pdfDocumentService.open(file);
             controller.openDocument(document);
 
             currentFile = file;
+            hasUnsavedChanges = false;
             recentFilesService.addFile(file);
             refreshRecentFilesMenu();
 
+            showWelcomeScreen(false);
             setViewerControlsEnabled(true);
-            primaryStage.setTitle("FilzaPDF — " + file.getName());
+            updateTitleAndStatus();
 
-            // Restore last page/zoom for this file
             int lastPage = viewerPreferences.getLastPage(file.getAbsolutePath());
             double lastZoom = viewerPreferences.getLastZoom(file.getAbsolutePath());
-            if (lastZoom > 0) controller.setZoom(lastZoom);
+            if (lastZoom > 0 && Math.abs(lastZoom - 1.0) > 0.01) {
+                controller.setZoom(lastZoom);
+            }
             if (lastPage > 0 && lastPage < controller.getModel().getPageCount()) {
                 controller.setCurrentPage(lastPage);
             }
 
-            // Background thumbnail loading
             renderThumbnailsInBackground();
-
-            // Background bookmark extraction
             loadBookmarksInBackground(document);
 
-            // Background text extraction for search
             searchService.extractTextInBackground(document, () ->
-                Platform.runLater(() -> statusDocLabel.setText(file.getName() + " — ready for search")));
+                    Platform.runLater(() -> statusDocLabel.setText(file.getName())));
 
-            statusDocLabel.setText(file.getName());
+            if (controller.getInteractionMode() == InteractionMode.EDIT_PDF_TEXT) {
+                textInspectorPane.refreshForCurrentPage();
+            }
+
             hideSearchBar();
 
         } catch (IOException e) {
-            showErrorDialog("Failed to open PDF",
-                "The file could not be opened.", e.getMessage());
+            showErrorDialog("Failed to Open PDF",
+                    "The file could not be opened.", e.getMessage());
+        }
+    }
+
+    private void openInMemoryDocument(PDDocument doc, String displayTitle) {
+        try {
+            saveCurrentFileState();
+            if (thumbnailTask != null) thumbnailTask.cancel(false);
+            if (controller.getDocument() != doc) {
+                controller.closeDocument();
+            }
+            annotationManager.clear();
+            searchService.search("", false);
+
+            showWelcomeScreen(false);
+            controller.openDocument(doc);
+            currentFile = null;
+            hasUnsavedChanges = true;
+
+            setViewerControlsEnabled(true);
+            primaryStage.setTitle("FilzaPDF — " + displayTitle + " *");
+            statusDocLabel.setText(displayTitle + " (" + doc.getNumberOfPages() + " pages, unsaved)");
+
+            renderThumbnailsInBackground();
+            loadBookmarksInBackground(doc);
+            searchService.extractTextInBackground(doc, null);
+
+            if (controller.getInteractionMode() == InteractionMode.EDIT_PDF_TEXT) {
+                textInspectorPane.refreshForCurrentPage();
+            }
+            updateLabels();
+            updateStatusBar();
+        } catch (IOException e) {
+            showErrorDialog("Failed to Load Document", "Error opening generated document", e.getMessage());
+        }
+    }
+
+    private void saveCurrentPdf() {
+        if (!controller.hasDocument()) return;
+        if (currentFile == null) {
+            saveCurrentPdfAs();
+            return;
+        }
+        savePdfToFile(currentFile);
+    }
+
+    private void saveCurrentPdfAs() {
+        if (!controller.hasDocument()) return;
+        FileChooser saver = new FileChooser();
+        saver.setTitle("Save PDF As");
+        saver.setInitialFileName(currentFile != null ? currentFile.getName() : "Document.pdf");
+        saver.getExtensionFilters().add(new FileChooser.ExtensionFilter("PDF Files (*.pdf)", "*.pdf"));
+        File out = saver.showSaveDialog(primaryStage);
+        if (out != null) {
+            savePdfToFile(out);
+        }
+    }
+
+    private void savePdfToFile(File targetFile) {
+        if (!controller.hasDocument()) return;
+        try {
+            PDDocument doc = controller.getDocument();
+            if (annotationManager.hasAnnotations()) {
+                annotationPersistence.burnAnnotationsIntoDocument(doc, annotationManager);
+                annotationManager.clear();
+                controller.refreshDocumentAfterEdit();
+            }
+            synchronized (doc) {
+                doc.save(targetFile);
+            }
+            currentFile = targetFile;
+            hasUnsavedChanges = false;
+            recentFilesService.addFile(targetFile);
+            refreshRecentFilesMenu();
+            updateTitleAndStatus();
+            statusDocLabel.setText("Saved " + targetFile.getName());
+        } catch (IOException e) {
+            showErrorDialog("Save Failed", "Could not save PDF to " + targetFile.getName(), e.getMessage());
         }
     }
 
     private void closeDocument() {
-        if (!controller.hasDocument()) return;
-        saveCurrentFileState();
-        if (thumbnailTask != null) thumbnailTask.cancel(true);
-        controller.closeDocument();
+        if (controller.hasDocument()) {
+            saveCurrentFileState();
+            if (thumbnailTask != null) thumbnailTask.cancel(false);
+            controller.closeDocument();
+            annotationManager.clear();
+        }
         currentFile = null;
+        hasUnsavedChanges = false;
         thumbnailContainer.getChildren().clear();
-        bookmarkTree.setRoot(new TreeItem<>("Bookmarks"));
+        bookmarkTree.setRoot(new TreeItem<>("Outline"));
+        segViewBtn.setSelected(true);
+        switchWorkspaceSegment("VIEW");
         setViewerControlsEnabled(false);
+        showWelcomeScreen(true);
         primaryStage.setTitle("FilzaPDF");
+        updateLabels();
         updateStatusBar();
         hideSearchBar();
     }
@@ -667,6 +1759,220 @@ public class FilzaPdfApplication extends Application {
         }
     }
 
+    // ── Studio & Pro Tool Actions ─────────────────────────────────────────────
+
+    private void openPdfMergerStudio() {
+        PdfMergerStudioDialog studio = new PdfMergerStudioDialog(
+                primaryStage,
+                currentFile,
+                mergedDoc -> openInMemoryDocument(mergedDoc, "Merged.pdf")
+        );
+        studio.show();
+    }
+
+    private void openImageToPdfStudio() {
+        ImageToPdfDialog dialog = new ImageToPdfDialog(
+                primaryStage,
+                controller.hasDocument() ? controller.getDocument() : null,
+                createdDoc -> openInMemoryDocument(createdDoc, "Images.pdf"),
+                () -> {
+                    showWelcomeScreen(false);
+                    controller.refreshDocumentAfterEdit();
+                    controller.setCurrentPage(controller.getModel().getPageCount() - 1);
+                    statusDocLabel.setText("Appended image page(s)");
+                }
+        );
+        dialog.show();
+    }
+
+    private void promptAndOpenWordFile() {
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Open Word (.docx) File");
+        fc.getExtensionFilters().add(
+                new FileChooser.ExtensionFilter("Word Documents (*.docx, *.txt, *.md)", "*.docx", "*.txt", "*.md")
+        );
+        File f = fc.showOpenDialog(primaryStage);
+        if (f != null) openWordStudio(f);
+    }
+
+    private void openWordStudio(File initialWordFile) {
+        WordStudioDialog studio = new WordStudioDialog(
+                primaryStage,
+                initialWordFile,
+                generatedPdf -> openInMemoryDocument(generatedPdf,
+                        initialWordFile != null ? initialWordFile.getName().replaceAll("\\.[^.]+$", "") + ".pdf" : "Document.pdf")
+        );
+        studio.show();
+    }
+
+    private void directConvertWordToPdf() {
+        FileChooser fc = new FileChooser();
+        fc.setTitle("Convert Word (.docx) to PDF");
+        fc.getExtensionFilters().add(new FileChooser.ExtensionFilter("Word Files (*.docx)", "*.docx"));
+        File in = fc.showOpenDialog(primaryStage);
+        if (in == null) return;
+        try {
+            PDDocument pdf = wordDocumentService.convertWordFileToPdf(in);
+            openInMemoryDocument(pdf, in.getName().replaceAll("\\.[^.]+$", "") + ".pdf");
+        } catch (Exception e) {
+            showErrorDialog("Conversion Failed", "Could not convert " + in.getName(), e.getMessage());
+        }
+    }
+
+    private void exportCurrentPdfToWord() {
+        if (!controller.hasDocument()) return;
+        FileChooser saver = new FileChooser();
+        saver.setTitle("Export PDF to Word (.docx)");
+        String base = currentFile != null ? currentFile.getName().replaceAll("\\.[^.]+$", "") : "Exported";
+        saver.setInitialFileName(base + ".docx");
+        saver.getExtensionFilters().add(new FileChooser.ExtensionFilter("Microsoft Word (*.docx)", "*.docx"));
+        File out = saver.showSaveDialog(primaryStage);
+        if (out == null) return;
+
+        try {
+            wordDocumentService.exportPdfToDocx(controller.getDocument(), out);
+            statusDocLabel.setText("Exported " + out.getName());
+        } catch (Exception e) {
+            showErrorDialog("Export Failed", "Could not export PDF to Word (.docx)", e.getMessage());
+        }
+    }
+
+    private void exportPagesToImagesDialog() {
+        if (!controller.hasDocument()) return;
+        DirectoryChooser dc = new DirectoryChooser();
+        dc.setTitle("Select Folder to Export Page Images (PNG)");
+        File dir = dc.showDialog(primaryStage);
+        if (dir == null) return;
+
+        String base = currentFile != null ? currentFile.getName().replaceAll("\\.[^.]+$", "") : "page";
+        try {
+            List<File> exported = toolboxService.exportAllPagesAsImages(controller.getDocument(), dir, base, 150f);
+            statusDocLabel.setText("Exported " + exported.size() + " PNG images");
+        } catch (Exception e) {
+            showErrorDialog("Export Failed", "Could not export pages.", e.getMessage());
+        }
+    }
+
+    private void rotateCurrentPage(int degrees) {
+        if (!controller.hasDocument()) return;
+        int p = controller.getModel().getCurrentPage();
+        toolboxService.rotatePage(controller.getDocument(), p, degrees);
+        controller.refreshDocumentAfterEdit();
+    }
+
+    private void insertBlankPageAfterCurrent() {
+        if (!controller.hasDocument()) return;
+        int p = controller.getModel().getCurrentPage();
+        toolboxService.insertBlankPage(controller.getDocument(), p, PDRectangle.A4);
+        controller.refreshDocumentAfterEdit();
+        controller.setCurrentPage(p + 1);
+    }
+
+    private void deleteCurrentPage() {
+        if (!controller.hasDocument()) return;
+        if (controller.getModel().getPageCount() <= 1) {
+            Alert a = new Alert(AlertType.WARNING, "Cannot delete the only page in the document.");
+            a.initOwner(primaryStage);
+            a.showAndWait();
+            return;
+        }
+        int p = controller.getModel().getCurrentPage();
+        toolboxService.deletePage(controller.getDocument(), p);
+        controller.refreshDocumentAfterEdit();
+    }
+
+    private void extractPagesDialog() {
+        if (!controller.hasDocument()) return;
+        int total = controller.getModel().getPageCount();
+        TextInputDialog d = new TextInputDialog("1-" + total);
+        d.initOwner(primaryStage);
+        d.setTitle("Extract Pages");
+        d.setHeaderText("Page range (1.." + total + "), e.g. 1-3 or 2,4:");
+        d.showAndWait().ifPresent(input -> {
+            try {
+                List<Integer> indices = new ArrayList<>();
+                for (String part : input.split("[,;]+")) {
+                    String s = part.trim();
+                    if (s.isEmpty()) continue;
+                    if (s.contains("-")) {
+                        String[] b = s.split("-", 2);
+                        int start = Integer.parseInt(b[0].trim());
+                        int end = Integer.parseInt(b[1].trim());
+                        for (int k = start; k <= end; k++) {
+                            if (k >= 1 && k <= total) indices.add(k - 1);
+                        }
+                    } else {
+                        int k = Integer.parseInt(s);
+                        if (k >= 1 && k <= total) indices.add(k - 1);
+                    }
+                }
+                if (!indices.isEmpty()) {
+                    PDDocument extracted = toolboxService.extractPages(controller.getDocument(), indices);
+                    openInMemoryDocument(extracted, "Extracted.pdf");
+                }
+            } catch (Exception ex) {
+                showErrorDialog("Extract Failed", "Invalid page range.", ex.getMessage());
+            }
+        });
+    }
+
+    private void addWatermarkDialog() {
+        if (!controller.hasDocument()) return;
+        TextInputDialog d = new TextInputDialog("CONFIDENTIAL");
+        d.initOwner(primaryStage);
+        d.setTitle("Add Watermark");
+        d.setHeaderText("Watermark text:");
+        d.showAndWait().ifPresent(text -> {
+            if (!text.trim().isEmpty()) {
+                try {
+                    toolboxService.addWatermarkToAllPages(controller.getDocument(), text.trim(), 54f, "#6E56CF", 0.22f);
+                    controller.refreshDocumentAfterEdit();
+                } catch (Exception ex) {
+                    showErrorDialog("Watermark Error", "Could not apply watermark.", ex.getMessage());
+                }
+            }
+        });
+    }
+
+    private void addPageNumbersToDocument() {
+        if (!controller.hasDocument()) return;
+        try {
+            toolboxService.addPageNumbers(controller.getDocument(), true, 10.5f);
+            controller.refreshDocumentAfterEdit();
+        } catch (Exception ex) {
+            showErrorDialog("Page Numbering Failed", "Could not add page numbers.", ex.getMessage());
+        }
+    }
+
+    private void encryptPdfDialog() {
+        if (!controller.hasDocument()) return;
+        Dialog<String> dialog = new Dialog<>();
+        dialog.initOwner(primaryStage);
+        dialog.setTitle("Encrypt PDF (256-bit AES)");
+        dialog.setHeaderText("Set document password:");
+
+        ButtonType protectBtn = new ButtonType("Apply", ButtonData.OK_DONE);
+        dialog.getDialogPane().getButtonTypes().addAll(protectBtn, ButtonType.CANCEL);
+
+        PasswordField pf = new PasswordField();
+        pf.setPromptText("Password");
+        dialog.getDialogPane().setContent(new VBox(8, new Label("Password:"), pf));
+        dialog.setResultConverter(b -> b == protectBtn ? pf.getText() : null);
+
+        dialog.showAndWait().ifPresent(pwd -> {
+            if (!pwd.isEmpty()) {
+                try {
+                    toolboxService.protectDocumentWithPassword(controller.getDocument(), pwd, pwd);
+                    hasUnsavedChanges = true;
+                    updateTitleAndStatus();
+                    statusDocLabel.setText("Encryption applied — Save document to persist");
+                } catch (Exception ex) {
+                    showErrorDialog("Encryption Error", "Failed to protect PDF.", ex.getMessage());
+                }
+            }
+        });
+    }
+
     // ── Thumbnail loading ─────────────────────────────────────────────────────
 
     private void renderThumbnailsInBackground() {
@@ -674,31 +1980,38 @@ public class FilzaPdfApplication extends Application {
         if (!controller.hasDocument()) return;
 
         int pageCount = controller.getModel().getPageCount();
+        final var activeRenderer = controller.getRenderer();
 
-        // Place empty placeholder boxes immediately so layout is stable
         for (int i = 0; i < pageCount; i++) {
             final int idx = i;
-            Label numLabel = new Label("Page " + (i + 1));
+            Label numLabel = new Label(String.valueOf(i + 1));
+            numLabel.getStyleClass().add("muted-label");
+            numLabel.setStyle("-fx-font-size: 11px;");
             ImageView view = new ImageView();
             view.setPreserveRatio(true);
-            view.setFitWidth(110);
-            view.setOnMouseClicked(e -> controller.setCurrentPage(idx));
-            VBox box = new VBox(4, numLabel, view);
+            view.setFitWidth(116);
+            VBox box = new VBox(4, view, numLabel);
             box.setAlignment(Pos.CENTER);
+            box.setPadding(new Insets(4));
+            box.setStyle("-fx-cursor: hand;");
+            box.setOnMouseClicked(e -> {
+                showWelcomeScreen(false);
+                controller.setCurrentPage(idx);
+            });
             thumbnailContainer.getChildren().add(box);
         }
 
         thumbnailTask = thumbnailExecutor.submit(() -> {
             for (int i = 0; i < pageCount; i++) {
-                if (Thread.currentThread().isInterrupted()) break;
+                if (controller.getRenderer() != activeRenderer) break;
                 final int pageIndex = i;
                 try {
-                    BufferedImage img = controller.getRenderer().renderPage(pageIndex, 25f);
-                    if (Thread.currentThread().isInterrupted()) break;
+                    BufferedImage img = activeRenderer.renderPage(pageIndex, 28f);
+                    if (controller.getRenderer() != activeRenderer) break;
                     Platform.runLater(() -> {
-                        if (pageIndex < thumbnailContainer.getChildren().size()) {
+                        if (controller.getRenderer() == activeRenderer && pageIndex < thumbnailContainer.getChildren().size()) {
                             VBox box = (VBox) thumbnailContainer.getChildren().get(pageIndex);
-                            ImageView view = (ImageView) box.getChildren().get(1);
+                            ImageView view = (ImageView) box.getChildren().get(0);
                             view.setImage(SwingFXUtils.toFXImage(img, null));
                         }
                     });
@@ -712,7 +2025,7 @@ public class FilzaPdfApplication extends Application {
     // ── Bookmark loading ──────────────────────────────────────────────────────
 
     private void loadBookmarksInBackground(PDDocument document) {
-        bookmarkTree.setRoot(new TreeItem<>("Bookmarks"));
+        bookmarkTree.setRoot(new TreeItem<>("Outline"));
         thumbnailExecutor.submit(() -> {
             try {
                 List<BookmarkNode> nodes = bookmarkService.extractBookmarks(document);
@@ -724,7 +2037,7 @@ public class FilzaPdfApplication extends Application {
     }
 
     private void populateBookmarkTree(List<BookmarkNode> nodes) {
-        TreeItem<String> root = new TreeItem<>("Bookmarks");
+        TreeItem<String> root = new TreeItem<>("Outline");
         root.setExpanded(true);
         for (BookmarkNode node : nodes) {
             root.getChildren().add(buildTreeItem(node));
@@ -733,7 +2046,6 @@ public class FilzaPdfApplication extends Application {
     }
 
     private TreeItem<String> buildTreeItem(BookmarkNode node) {
-        // Store page index in the title so we can navigate on click
         String label = node.getTitle() != null ? node.getTitle() : "(untitled)";
         TreeItem<String> item = new TreeItem<>(label + "\u0000" + node.getPageIndex());
         item.setExpanded(true);
@@ -748,12 +2060,14 @@ public class FilzaPdfApplication extends Application {
         if (selected == null || !controller.hasDocument()) return;
         String value = selected.getValue();
         if (value == null) return;
-        // Parse encoded page index
         int sep = value.lastIndexOf('\u0000');
         if (sep < 0) return;
         try {
             int pageIndex = Integer.parseInt(value.substring(sep + 1));
-            if (pageIndex >= 0) controller.setCurrentPage(pageIndex);
+            if (pageIndex >= 0) {
+                showWelcomeScreen(false);
+                controller.setCurrentPage(pageIndex);
+            }
         } catch (NumberFormatException ignored) {}
     }
 
@@ -770,7 +2084,7 @@ public class FilzaPdfApplication extends Application {
             for (String path : recents) {
                 File f = new File(path);
                 MenuItem item = new MenuItem(f.getName());
-                item.setOnAction(e -> openFile(f));
+                item.setOnAction(e -> openAnySupportedFile(f));
                 recentFilesMenu.getItems().add(item);
             }
             recentFilesMenu.getItems().add(new SeparatorMenuItem());
@@ -778,6 +2092,7 @@ public class FilzaPdfApplication extends Application {
             clear.setOnAction(e -> clearRecentFiles());
             recentFilesMenu.getItems().add(clear);
         }
+        refreshWelcomeRecentFiles();
     }
 
     private void clearRecentFiles() {
@@ -794,15 +2109,16 @@ public class FilzaPdfApplication extends Application {
         org.apache.pdfbox.pdmodel.PDDocumentInformation info = doc.getDocumentInformation();
 
         String text = String.join("\n",
-            "Title:    " + nvl(info.getTitle()),
-            "Author:   " + nvl(info.getAuthor()),
-            "Subject:  " + nvl(info.getSubject()),
-            "Creator:  " + nvl(info.getCreator()),
-            "Producer: " + nvl(info.getProducer()),
-            "Pages:    " + doc.getNumberOfPages()
+                "Title:    " + nvl(info.getTitle()),
+                "Author:   " + nvl(info.getAuthor()),
+                "Subject:  " + nvl(info.getSubject()),
+                "Creator:  " + nvl(info.getCreator()),
+                "Producer: " + nvl(info.getProducer()),
+                "Pages:    " + doc.getNumberOfPages()
         );
 
         Alert alert = new Alert(AlertType.INFORMATION);
+        alert.initOwner(primaryStage);
         alert.setTitle("Document Properties");
         alert.setHeaderText(currentFile != null ? currentFile.getName() : "PDF Document");
         alert.setContentText(text);
@@ -811,7 +2127,6 @@ public class FilzaPdfApplication extends Application {
 
     // ── Annotation helpers ────────────────────────────────────────────────────
 
-    /** Demo: adds a placeholder annotation on the current page. Real tools would use AnnotationTool implementations. */
     @SuppressWarnings("unused")
     private void addDemoAnnotation(AnnotationType type, int pageIndex, double x, double y, double w, double h) {
         Annotation a = new Annotation();
@@ -824,18 +2139,23 @@ public class FilzaPdfApplication extends Application {
     }
 
     private void onAnnotationsChanged() {
+        hasUnsavedChanges = true;
         refreshAnnotationButtons();
+        updateTitleAndStatus();
     }
 
     private void refreshAnnotationButtons() {
-        // Buttons are always present; undo/redo gracefully no-op when stacks are empty
-        // (AnnotationManager already guards them)
+        if (undoButton != null) undoButton.setDisable(!controller.hasDocument() || !annotationManager.canUndo());
+        if (redoButton != null) redoButton.setDisable(!controller.hasDocument() || !annotationManager.canRedo());
     }
 
     // ── Page navigation helpers ───────────────────────────────────────────────
 
     private void goToPage(int pageIndex) {
-        if (controller.hasDocument()) controller.setCurrentPage(pageIndex);
+        if (controller.hasDocument()) {
+            showWelcomeScreen(false);
+            controller.setCurrentPage(pageIndex);
+        }
     }
 
     private void jumpToPage() {
@@ -844,6 +2164,7 @@ public class FilzaPdfApplication extends Application {
             int target = Integer.parseInt(pageField.getText()) - 1;
             int count  = controller.getModel().getPageCount();
             if (target >= 0 && target < count) {
+                showWelcomeScreen(false);
                 controller.setCurrentPage(target);
             } else {
                 updateLabels();
@@ -858,17 +2179,29 @@ public class FilzaPdfApplication extends Application {
     private void onPageChanged() {
         updateLabels();
         updateStatusBar();
+        if (controller.hasDocument() && controller.getInteractionMode() == InteractionMode.EDIT_PDF_TEXT) {
+            textInspectorPane.refreshForCurrentPage();
+        }
+    }
+
+    private void updateTitleAndStatus() {
+        if (!controller.hasDocument()) {
+            primaryStage.setTitle("FilzaPDF");
+            return;
+        }
+        String name = currentFile != null ? currentFile.getName() : "Untitled.pdf";
+        primaryStage.setTitle("FilzaPDF — " + name + (hasUnsavedChanges ? " *" : ""));
     }
 
     private void updateLabels() {
         if (!controller.hasDocument()) {
-            pageLabel.setText("of 0");
+            pageLabel.setText("/ 0");
             pageField.setText("");
             zoomLabel.setText("100%");
             return;
         }
         PdfViewerModel model = controller.getModel();
-        pageLabel.setText("of " + model.getPageCount());
+        pageLabel.setText("/ " + model.getPageCount());
         pageField.setText(String.valueOf(model.getCurrentPage() + 1));
         zoomLabel.setText(String.format("%.0f%%", model.getZoom() * 100));
     }
@@ -881,63 +2214,60 @@ public class FilzaPdfApplication extends Application {
         }
         PdfViewerModel model = controller.getModel();
         statusPageLabel.setText("Page " + (model.getCurrentPage() + 1) + " of " + model.getPageCount());
-        statusZoomLabel.setText(String.format("Zoom %.0f%%", model.getZoom() * 100));
+        statusZoomLabel.setText(String.format("%.0f%%", model.getZoom() * 100));
     }
 
     // ── UI control state ──────────────────────────────────────────────────────
 
     private void setViewerControlsEnabled(boolean enabled) {
-        previousButton .setDisable(!enabled);
-        nextButton     .setDisable(!enabled);
-        zoomOutButton  .setDisable(!enabled);
-        zoomInButton   .setDisable(!enabled);
-        fitWidthButton .setDisable(!enabled);
-        fitPageButton  .setDisable(!enabled);
-        resetZoomButton.setDisable(!enabled);
-        undoButton     .setDisable(!enabled);
-        redoButton     .setDisable(!enabled);
-        pageField      .setDisable(!enabled);
+        saveButton       .setDisable(!enabled);
+        saveAsButton     .setDisable(!enabled);
+        exportWordButton .setDisable(!enabled);
+        previousButton   .setDisable(!enabled);
+        nextButton       .setDisable(!enabled);
+        zoomOutButton    .setDisable(!enabled);
+        zoomInButton     .setDisable(!enabled);
+        fitWidthButton   .setDisable(!enabled);
+        fitPageButton    .setDisable(!enabled);
+        resetZoomButton  .setDisable(!enabled);
+        pageField        .setDisable(!enabled);
+
+        segViewBtn       .setDisable(!enabled);
+        segEditBtn       .setDisable(!enabled);
+        segMarkupBtn     .setDisable(!enabled);
+        segOrganizeBtn   .setDisable(!enabled);
+
+        refreshAnnotationButtons();
     }
 
     // ── Dialogs ───────────────────────────────────────────────────────────────
 
     private void showErrorDialog(String title, String header, String detail) {
         Alert alert = new Alert(AlertType.ERROR);
+        alert.initOwner(primaryStage);
         alert.setTitle(title);
         alert.setHeaderText(header);
-        // Show user-friendly message; developer detail goes to stderr, not to user
-        alert.setContentText("An error occurred. Please check the file and try again.");
+        alert.setContentText(detail != null ? detail : "Please check the file and try again.");
         alert.showAndWait();
         System.err.println("[ERROR] " + title + " | " + detail);
     }
 
     private void showAboutDialog() {
-        Alert alert = new Alert(AlertType.INFORMATION);
-        alert.setTitle("About FilzaPDF");
-        alert.setHeaderText("FilzaPDF v0.1.0");
-        alert.setContentText(
-            "A professional Java desktop PDF reader.\n\n" +
-            "Built with:\n" +
-            "  • Java 21\n" +
-            "  • JavaFX 21\n" +
-            "  • Apache PDFBox 3.0.6\n\n" +
-            "Keyboard shortcuts:\n" +
-            "  Ctrl+O  Open PDF\n" +
-            "  Ctrl+F  Find\n" +
-            "  ← / →   Previous / Next page\n" +
-            "  + / −   Zoom in / out\n" +
-            "  Ctrl+0  Reset zoom\n" +
-            "  F11     Fullscreen\n" +
-            "  Ctrl+Z  Undo annotation\n" +
-            "  Ctrl+Y  Redo annotation"
-        );
-        alert.showAndWait();
+        new AboutFilzaDialog(primaryStage).show();
     }
 
     // ── Utilities ─────────────────────────────────────────────────────────────
 
     private static String nvl(String s) {
         return s != null && !s.isEmpty() ? s : "—";
+    }
+
+    private static String toHex(Color c) {
+        if (c == null) return "#7C66DC";
+        int r = (int) Math.round(c.getRed() * 255);
+        int g = (int) Math.round(c.getGreen() * 255);
+        int b = (int) Math.round(c.getBlue() * 255);
+        return String.format("#%02X%02X%02X", r, g, b);
     }
 
     public static void main(String[] args) {

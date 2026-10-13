@@ -38,15 +38,21 @@ public class PdfTextSearchService {
         executor.submit(() -> {
             try {
                 PDFTextStripper stripper = new PDFTextStripper();
-                int pages = document.getNumberOfPages();
+                int pages;
+                synchronized (document) {
+                    pages = document.getNumberOfPages();
+                }
                 for (int i = 0; i < pages; i++) {
-                    stripper.setStartPage(i + 1);
-                    stripper.setEndPage(i + 1);
-                    String text = stripper.getText(document);
+                    String text;
+                    synchronized (document) {
+                        stripper.setStartPage(i + 1);
+                        stripper.setEndPage(i + 1);
+                        text = stripper.getText(document);
+                    }
                     pageTexts.put(i, text);
                 }
-            } catch (IOException e) {
-                e.printStackTrace();
+            } catch (Exception e) {
+                // Ignore if document was closed while background extraction ran
             } finally {
                 if (onExtractionComplete != null) {
                     onExtractionComplete.run();

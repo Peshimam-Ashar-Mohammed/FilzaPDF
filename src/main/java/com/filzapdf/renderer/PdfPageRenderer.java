@@ -22,25 +22,28 @@ public class PdfPageRenderer {
 
     /**
      * Renders a single PDF page at the requested DPI.
+     * Synchronized on the underlying PDDocument because Apache PDFBox's
+     * PDDocument and PDFRenderer are not thread-safe for concurrent access.
      *
      * @param pageIndex zero-based page index
      * @param dpi rendering resolution
      * @return rendered page image
      */
     public BufferedImage renderPage(int pageIndex, float dpi) {
-        validatePageIndex(pageIndex);
-
         if (dpi <= 0) {
             throw new IllegalArgumentException("DPI must be greater than zero");
         }
 
-        try {
-            return pdfRenderer.renderImageWithDPI(pageIndex, dpi);
-        } catch (IOException | IllegalArgumentException e) {
-            throw new PdfPageRenderingException(
-                    "Failed to render PDF page " + pageIndex,
-                    e
-            );
+        synchronized (document) {
+            validatePageIndex(pageIndex);
+            try {
+                return pdfRenderer.renderImageWithDPI(pageIndex, dpi);
+            } catch (IOException | IllegalArgumentException e) {
+                throw new PdfPageRenderingException(
+                        "Failed to render PDF page " + pageIndex,
+                        e
+                );
+            }
         }
     }
 
@@ -48,33 +51,48 @@ public class PdfPageRenderer {
      * Returns the width of a PDF page in points.
      */
     public float getPageWidth(int pageIndex) {
-        validatePageIndex(pageIndex);
-        return document.getPage(pageIndex).getMediaBox().getWidth();
+        synchronized (document) {
+            validatePageIndex(pageIndex);
+            int rot = document.getPage(pageIndex).getRotation();
+            if (rot == 90 || rot == 270) {
+                return document.getPage(pageIndex).getMediaBox().getHeight();
+            }
+            return document.getPage(pageIndex).getMediaBox().getWidth();
+        }
     }
 
     /**
      * Returns the height of a PDF page in points.
      */
     public float getPageHeight(int pageIndex) {
-        validatePageIndex(pageIndex);
-        return document.getPage(pageIndex).getMediaBox().getHeight();
+        synchronized (document) {
+            validatePageIndex(pageIndex);
+            int rot = document.getPage(pageIndex).getRotation();
+            if (rot == 90 || rot == 270) {
+                return document.getPage(pageIndex).getMediaBox().getWidth();
+            }
+            return document.getPage(pageIndex).getMediaBox().getHeight();
+        }
     }
 
     /**
      * Returns the aspect ratio of a PDF page.
      */
     public double getPageAspectRatio(int pageIndex) {
-        float width = getPageWidth(pageIndex);
-        float height = getPageHeight(pageIndex);
-
-        return width / height;
+        synchronized (document) {
+            float width = getPageWidth(pageIndex);
+            float height = getPageHeight(pageIndex);
+            return width / height;
+        }
     }
 
     /**
      * Returns the number of pages in the document.
      */
     public int getPageCount() {
-        return document.getNumberOfPages();
+        synchronized (document) {
+            return document.getNumberOfPages();
+        }
     }
 
     /**

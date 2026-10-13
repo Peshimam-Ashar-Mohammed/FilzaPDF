@@ -41,5 +41,16 @@ public class AnnotationManager {
         List<Annotation> list = pageAnnotations.get(a.getPageIndex());
         if (list != null) list.remove(a);
     }
+    public boolean canUndo() { return !undoStack.isEmpty(); }
+    public boolean canRedo() { return !redoStack.isEmpty(); }
+    public boolean hasAnnotations() {
+        return pageAnnotations.values().stream().anyMatch(l -> !l.isEmpty());
+    }
+    public void clear() {
+        pageAnnotations.clear();
+        undoStack.clear();
+        redoStack.clear();
+        notifyChanged();
+    }
     private void notifyChanged() { if (onAnnotationsChanged != null) onAnnotationsChanged.run(); }
 }

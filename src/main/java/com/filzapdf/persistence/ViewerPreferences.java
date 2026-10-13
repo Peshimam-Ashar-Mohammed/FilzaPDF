@@ -42,7 +42,7 @@ public class ViewerPreferences {
     }
 
     public String getTheme() {
-        return props.getProperty("theme", "light");
+        return props.getProperty("theme", "dark");
     }
 
     private void load() {
