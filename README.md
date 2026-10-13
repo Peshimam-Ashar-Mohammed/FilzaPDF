@@ -1,5 +1,8 @@
 # FilzaPDF
 
+[![FilzaPDF CI](https://github.com/Peshimam-Ashar-Mohammed/FilzaPDF/actions/workflows/ci.yml/badge.svg)](https://github.com/Peshimam-Ashar-Mohammed/FilzaPDF/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-7C66DC.svg)](LICENSE)
+
 **Free document tools. Your files. Your control.**
 
 FilzaPDF is a Java-based desktop document productivity suite designed to bring PDF viewing, document editing, file conversion, annotations, and page management into one application.
@@ -13,43 +16,50 @@ Built with **Java 21, JavaFX 21, Apache PDFBox 3, Apache POI, and Gradle**, Filz
 ## Table of Contents
 
 - [Features](#features)
+- [Engineering Architecture (v0.2)](#engineering-architecture-v02)
 - [Technology Stack](#technology-stack)
 - [Privacy and Philosophy](#privacy-and-philosophy)
 - [About FilzaPDF](#about-filzapdf)
 - [The Bigger Vision](#the-bigger-vision)
 - [Getting Started](#getting-started)
 - [Build and Test](#build-and-test)
-- [Project Status](#project-status)
+- [Project Status & Technical Scope](#project-status--technical-scope)
 - [Contributing](#contributing)
 - [About the Developer](#about-the-developer)
+- [License](#license)
 
 ---
 
 ## Features
 
-### 1. PDF Text Recognition and Editing
+### 1. Crisp Progressive HiDPI PDF Viewing & Rendering
+
+- **HiDPI Supersampled Rendering:** Renders pages at device-pixel-aware resolutions (`150–360 DPI`) with subpixel antialiasing, bicubic interpolation, and fractional font metrics so text and vector graphics remain sharp across zoom levels.
+- **Two-Pass Progressive Viewport:** Immediately displays the best available cached resolution or a fast `96 DPI` preview while sharpening visible pages in the background.
+- **Epoch-Guarded Cancellable Tasks:** Background render tasks are guarded by an `AtomicLong` render generation counter so rapid zooming or scrolling never allows stale renders to overwrite newer zoom levels.
+- **Thread-Safe Memory-Budgeted Page Cache:** Synchronized LRU `PageCache` bounded by both entry count and a `192 MB` heap byte budget (`getUsedBytes()`).
+
+### 2. PDF Text Recognition and Editing
 
 Inspect recognized text blocks and their typography directly on a PDF page.
 
 - **Text recognition:** Extract text blocks and their bounding boxes, with available font family, style, and size information.
-- **Typography inspector:** Inspect and modify supported text properties, including font family, size, bold/italic styling, and colors.
-- **Insert text:** Add new styled text blocks using `Ctrl + T`.
-- **Image and signature placement:** Place images directly onto PDF pages.
-- **Editing workflow:** Use `Ctrl + E` to access the PDF editing mode.
+- **Content-stream token scrubbing & replacement:** Inspect and modify supported text properties via the **Typography Inspector** (`Ctrl + E`). When replacing text, FilzaPDF parses the page's PDF content stream (`PDFStreamParser` + `ContentStreamWriter`) to scrub the original `Tj`/`TJ` string operands directly—avoiding opaque cover boxes over white/transparent backgrounds unless a custom background fill is explicitly chosen.
+- **TrueType Unicode font fallback:** Automatically embeds system TrueType fonts (`PDType0Font`) when non-WinAnsi / Unicode characters are entered.
+- **Insert text & place images:** Add new styled text blocks using `Ctrl + T` or place images and signatures directly onto PDF pages.
 
 *Note: Editing existing PDF text can be constrained by the original document's font encoding, layout, and text structure.*
 
-### 2. PDF Merger and Composer
+### 3. PDF Merger and Composer
 
 Combine multiple PDF documents and customize the order of their pages using `Ctrl + M`.
 
 - **Sequential merging:** Combine documents one after another.
 - **Interleaved merging:** Alternate pages or page chunks from different documents.
 - **Custom page recipes:** Define page sequences with expressions such as `A:1, B:1-2, A:2-end`.
-- **Page selection:** Add specific page ranges to the output.
-- **Output queue:** Reorder selected pages, preview thumbnails, and open or save the resulting PDF.
+- **Page selection & output queue:** Add specific page ranges, reorder selected pages, preview thumbnails, and open or save the resulting PDF.
 
-### 3. Images to PDF Studio
+### 4. Images to PDF Studio
 
 Create PDFs from image collections.
 
@@ -59,49 +69,65 @@ Create PDFs from image collections.
 - Configure portrait or landscape orientation and page margins.
 - Create a new PDF or append image pages to an existing document.
 
-### 4. Word and Document Studio
+### 5. Word and Document Studio
 
-Work with text documents and Microsoft Word-compatible files.
+Work with structured text documents and Microsoft Word-compatible files.
 
 - Create documents containing headings, paragraphs, lists, dividers, page breaks, and images.
 - Open and edit supported `.docx`, `.txt`, and `.md` files.
-- Save documents as `.docx`.
-- Export documents to PDF.
-- Convert PDF content into an editable Word document.
+- Save documents as `.docx` or export directly to a paginated vector PDF.
+- Convert PDF text content into an editable `.docx` document.
 
-**Format compatibility note:** PDF-to-Word conversion may require layout adjustments. PDF files preserve positioned content rather than the semantic structure of a typical Word document, so conversion fidelity can vary.
+**Format compatibility note:** `WordDocumentService` maps `.docx` paragraphs, headings, lists, tables, and images into a structured block model (`DocumentBlock`). PDF-to-Word and Word-to-PDF workflows are designed as a practical document studio and converter rather than a full replica of Microsoft Word's complex floating layout engine.
 
-### 5. PDF Annotations and Markup
+### 6. PDF Annotations, Markup, and Content-Stream Redaction
 
-Annotate documents using available markup tools.
+Annotate documents using vector markup tools:
 
-- Highlight
-- Underline
-- Strikethrough
-- Freehand drawing
-- Rectangle markup
-- Sticky notes
-- Redaction tools
+- Highlight, Underline, Strikethrough, Freehand ink, Rectangle markup, and Sticky notes
+- **Content-Stream Redaction (`REDACT`):** Locates text blocks intersecting the redaction box, scrubs the underlying text operators (`Tj`, `TJ`, `'`, `"`) from the PDF page's content stream, and burns the black redaction bar over the region so redacted text cannot be extracted via `PDFTextStripper` after saving.
 - Undo and redo with `Ctrl + Z` and `Ctrl + Y`
-- Save supported annotations to PDF
+- Save annotations permanently to PDF (`Ctrl + S`)
 
-### 6. Page Management
+### 7. Page Management & Document Security
 
-Organize PDF documents with page-level tools.
+Organize and protect PDF documents with page-level tools:
 
-- Rotate pages.
-- Insert blank pages.
-- Delete pages.
-- Extract selected page ranges.
-- Export pages as PNG images.
-- Add watermarks.
-- Insert page numbers.
+- Rotate pages, insert blank pages, delete pages, and extract selected page ranges.
+- Export pages as PNG images (`150 DPI`).
+- Add diagonal watermarks and stamp page numbers.
+- Apply password protection and **256-bit AES encryption**.
 
-### 7. Document Security
+---
 
-Apply password protection and encryption using supported PDF security features, including AES-256 encryption where configured.
+## Engineering Architecture (v0.2)
 
-**Security note:** Password protection and encryption are different from secure redaction. If a document contains confidential information, verify that redaction permanently removes the underlying text and content before sharing it.
+```text
+com.filzapdf
+├── app/
+│   └── FilzaPdfApplication.java              # Main JavaFX shell, command bar, and workspace orchestration
+├── ui/
+│   ├── PdfViewerController.java              # Progressive HiDPI viewport rendering & interaction modes
+│   ├── WelcomeDashboardView.java             # Home Launchpad cards & recent documents view
+│   ├── PageOperationsDialogs.java            # Focused dialogs for text/image insertion, extraction, watermarks & AES encryption
+│   ├── PdfTextInspectorPane.java             # Right-hand inspector for in-place PDF text & font editing
+│   ├── PdfMergerStudioDialog.java            # Custom page-by-page PDF merger & recipe composer
+│   ├── ImageToPdfDialog.java                 # Multi-image to PDF builder & page inserter
+│   ├── WordStudioDialog.java                 # Structured .docx / PDF document studio
+│   ├── AboutFilzaDialog.java                 # Project story, vision, and developer links
+│   └── SvgIcons.java                         # Crisp 16x16 vector SVGPath icons
+├── renderer/
+│   ├── PdfPageRenderer.java                  # Synchronized HiDPI PDFBox renderer (RenderDestination.VIEW, bicubic, no subsampling)
+│   └── PageCache.java                        # Thread-safe LRU page cache with 192 MB byte memory budget
+├── pdf/
+│   ├── PdfTextEditorService.java             # Text/font recognition, content-stream token scrubbing & replacement, Unicode font embedding
+│   ├── PdfToolboxService.java                # Custom merging, splitting, rotation, watermarks, page numbering & 256-bit AES encryption
+│   ├── PdfCreatorService.java                # Image-to-PDF engine & structured block-to-PDF layout engine
+│   └── WordDocumentService.java              # Apache POI .docx <-> DocumentBlock converter
+└── annotations/
+    ├── AnnotationManager.java                # Command-pattern undo/redo annotation state
+    └── PdfAnnotationPersistenceService.java  # Content-stream redaction + vector annotation persistence
+```
 
 ---
 
@@ -111,16 +137,16 @@ Apply password protection and encryption using supported PDF security features, 
 |---|---|
 | Java 21 | Core application logic |
 | JavaFX 21 | Desktop user interface |
-| Apache PDFBox 3 | PDF rendering and manipulation |
-| Apache POI | Microsoft Office document processing |
+| Apache PDFBox 3 | PDF rendering, content-stream parsing, and manipulation |
+| Apache POI | Microsoft Office (`.docx`) document processing |
 | Gradle | Build automation and dependency management |
-| JUnit 5 | Automated testing |
+| JUnit 5 | Automated unit and integration testing |
 
 ---
 
 ## Privacy and Philosophy
 
-FilzaPDF is designed around a local-first approach: document processing should happen on your computer wherever practical, rather than requiring you to upload files to an online conversion service.
+FilzaPDF is designed around a local-first approach: document processing happens on your computer rather than requiring you to upload files to an online conversion service.
 
 The project's guiding principles are:
 
@@ -217,7 +243,7 @@ chmod +x gradlew
 
 ## Build and Test
 
-Run the automated test suite:
+Run the automated JUnit 5 test suite:
 
 **Windows:**
 
@@ -241,13 +267,13 @@ On Windows, use `.\gradlew.bat build`.
 
 ---
 
-## Project Status
+## Project Status & Technical Scope
 
-FilzaPDF is an actively developed project. Features, compatibility, and behavior may change as development continues.
+FilzaPDF is an actively developed project. Features, compatibility, and behavior may change as development continues:
 
-PDFs vary significantly in their internal structure, fonts, encodings, and layouts. Word conversion and in-place PDF editing can therefore have limitations even when the relevant tools are available.
-
-Before relying on FilzaPDF for important documents, test the workflows you need with representative files and keep backups of originals.
+- **PDF Content-Stream Text Editing:** PDF is a fixed-layout page description format rather than a reflowable word processor format. `PdfTextEditorService` extracts positioned `TextPosition` runs, scrubs matching string operands from the page's content stream (`Tj`, `TJ`, `'`, `"`), and writes replacement text at the original baseline coordinates. This works well for single-line text blocks and redaction, but does not reflow multi-paragraph columns or edit glyph-positioned subsetted fonts in-place without substituting standard or system TrueType fonts.
+- **Redaction Scope:** `REDACT` scrubs matching text tokens from the page content stream inside the redaction rectangle and draws a permanent black box over the region (verified by automated JUnit tests using `PDFTextStripper`). Embedded raster images or vector paths underneath a redaction box are visually covered by the burned rectangle; for scanned image-only PDFs, exporting/rasterizing the page is recommended for full pixel removal.
+- **Before relying on FilzaPDF for critical documents**, test the workflows you need with representative files and keep backups of originals.
 
 ---
 
@@ -277,7 +303,7 @@ Please include a minimal reproduction example when reporting a document-processi
 
 ## About the Developer
 
-I'm a Computer Science and Engineering student interested in Java, software development, Linux, open-source projects, and building practical tools that solve real problems.
+I'm **Ashar**, a Computer Science and Engineering student interested in Java, software development, Linux, open-source projects, and building practical tools that solve real problems.
 
 **Connect with me:**
 
@@ -289,9 +315,7 @@ I'm a Computer Science and Engineering student interested in Java, software deve
 
 ## License
 
-Please see the repository's `LICENSE` file for the terms under which FilzaPDF can be used, modified, and distributed.
-
-If the project does not yet have a license, one should be selected and added before describing the software as formally open source. Making a repository public alone does not grant others permission to redistribute or modify its code.
+Released under the [MIT License](LICENSE). See the [`LICENSE`](LICENSE) file for full terms.
 
 ---
 

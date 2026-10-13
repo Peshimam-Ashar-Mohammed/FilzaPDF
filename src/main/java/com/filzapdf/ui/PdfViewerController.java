@@ -11,6 +11,7 @@ import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
+import java.util.concurrent.atomic.AtomicLong;
 import java.util.function.Consumer;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
@@ -44,6 +45,7 @@ import javafx.scene.layout.VBox;
 import javafx.scene.paint.Color;
 import javafx.scene.text.Font;
 import javafx.scene.text.FontWeight;
+import javafx.stage.Screen;
 import javafx.stage.Stage;
 
 public class PdfViewerController {
@@ -60,6 +62,9 @@ public class PdfViewerController {
 
     private static final int PRELOAD_DISTANCE = 2;
     private static final float BASE_DPI = 72f;
+    private static final float FAST_PREVIEW_DPI = 96f;
+    private static final float MIN_CRISP_DPI = 150f;
+    private static final float MAX_RENDER_DPI = 360f;
     private static final double PAGE_SPACING = 20.0;
 
     private final Stage stage;
@@ -88,8 +93,13 @@ public class PdfViewerController {
     private RecognizedTextBlock selectedTextBlock;
     private RecognizedTextBlock hoveredTextBlock;
 
-    private final ExecutorService renderExecutor = Executors.newSingleThreadExecutor();
+    private final ExecutorService renderExecutor = Executors.newSingleThreadExecutor(r -> {
+        Thread t = new Thread(r, "pdf-page-renderer");
+        t.setDaemon(true);
+        return t;
+    });
     private final Map<Integer, Future<?>> renderTasks = new ConcurrentHashMap<>();
+    private final AtomicLong renderGeneration = new AtomicLong(0L);
 
     private Runnable onPageChanged;
     private Consumer<RecognizedTextBlock> onTextBlockSelected;
@@ -224,7 +234,7 @@ public class PdfViewerController {
             }
             renderer = new PdfPageRenderer(document);
             model = new PdfViewerModel(document.getNumberOfPages());
-            pageCache = new PageCache(20);
+            pageCache = new PageCache(32, 224L * 1024L * 1024L);
             recognizedPageTextMap.clear();
             selectedTextBlock = null;
             hoveredTextBlock = null;
@@ -831,6 +841,27 @@ public class PdfViewerController {
         }
     }
 
+    /**
+     * Computes the physical render DPI for the current zoom and display output scale.
+     * Uses at least 2.0x supersampling (150+ DPI at 100% zoom) so text and vector lines
+     * remain crisp on both standard and HiDPI / Retina displays.
+     */
+    private float computeTargetRenderDpi() {
+        double screenScale = 1.0;
+        try {
+            Screen primary = Screen.getPrimary();
+            if (primary != null) {
+                screenScale = Math.max(1.0, primary.getOutputScaleX());
+            }
+        } catch (Exception ignored) {
+            // Headless or toolkit not initialized
+        }
+        double supersample = Math.max(2.08, screenScale * 1.5);
+        double rawDpi = BASE_DPI * model.getZoom() * supersample;
+        float clamped = (float) Math.max(MIN_CRISP_DPI, Math.min(MAX_RENDER_DPI, rawDpi));
+        return Math.round(clamped / 6f) * 6f;
+    }
+
     private void renderPageIntoView(int pageIndex) {
         ImageView imageView = pageViews.get(pageIndex);
         ProgressIndicator spinner = loadingIndicators.get(pageIndex);
@@ -839,15 +870,23 @@ public class PdfViewerController {
             return;
         }
 
-        float dpi = (float) (BASE_DPI * model.getZoom());
+        final float targetDpi = computeTargetRenderDpi();
         final PdfPageRenderer activeRenderer = this.renderer;
+        final PageCache activeCache = this.pageCache;
+        final long generation = this.renderGeneration.get();
 
-        if (pageCache.containsKey(pageIndex, dpi)) {
-            BufferedImage cached = pageCache.get(pageIndex, dpi);
-            setImageOnFxThread(pageIndex, cached);
+        BufferedImage exactCached = activeCache != null ? activeCache.get(pageIndex, targetDpi) : null;
+        if (exactCached != null) {
+            setImageOnFxThread(pageIndex, exactCached);
             spinner.setVisible(false);
             errLabel.setVisible(false);
             return;
+        }
+
+        // Show best available cached resolution immediately while crisp render runs in background
+        BufferedImage fallbackCached = activeCache != null ? activeCache.getBestAvailableForPage(pageIndex) : null;
+        if (fallbackCached != null && imageView.getImage() == null) {
+            setImageOnFxThread(pageIndex, fallbackCached);
         }
 
         Future<?> existing = renderTasks.get(pageIndex);
@@ -855,23 +894,52 @@ public class PdfViewerController {
             return;
         }
 
-        spinner.setVisible(true);
+        final boolean needsFastPreview = (imageView.getImage() == null && fallbackCached == null && targetDpi > FAST_PREVIEW_DPI);
+        if (imageView.getImage() == null) {
+            spinner.setVisible(true);
+        }
         errLabel.setVisible(false);
 
         Future<?> task = renderExecutor.submit(() -> {
             try {
-                if (this.renderer != activeRenderer) return;
-                BufferedImage image = activeRenderer.renderPage(pageIndex, dpi);
+                if (this.renderer != activeRenderer || this.renderGeneration.get() != generation) {
+                    return;
+                }
 
-                if (this.renderer != activeRenderer) return;
-                if (pageCache != null) {
-                    pageCache.put(pageIndex, dpi, image);
+                // Pass 1: Fast preview pass if page has no placeholder image yet
+                if (needsFastPreview) {
+                    BufferedImage preview = activeRenderer.renderPage(pageIndex, FAST_PREVIEW_DPI);
+                    if (this.renderer != activeRenderer || this.renderGeneration.get() != generation) {
+                        return;
+                    }
+                    if (activeCache != null) {
+                        activeCache.put(pageIndex, FAST_PREVIEW_DPI, preview);
+                    }
+                    Platform.runLater(() -> {
+                        if (this.renderer == activeRenderer && this.renderGeneration.get() == generation) {
+                            setImageOnFxThread(pageIndex, preview);
+                            spinner.setVisible(false);
+                        }
+                    });
+                }
+
+                // Pass 2: Full crisp HiDPI supersampled render
+                if (this.renderer != activeRenderer || this.renderGeneration.get() != generation) {
+                    return;
+                }
+                BufferedImage crispImage = activeRenderer.renderPage(pageIndex, targetDpi);
+
+                if (this.renderer != activeRenderer || this.renderGeneration.get() != generation) {
+                    return;
+                }
+                if (activeCache != null) {
+                    activeCache.put(pageIndex, targetDpi, crispImage);
                 }
 
                 Platform.runLater(() -> {
                     renderTasks.remove(pageIndex);
-                    if (this.renderer == activeRenderer) {
-                        setImageOnFxThread(pageIndex, image);
+                    if (this.renderer == activeRenderer && this.renderGeneration.get() == generation) {
+                        setImageOnFxThread(pageIndex, crispImage);
                         spinner.setVisible(false);
                         errLabel.setVisible(false);
                         redrawOverlay(pageIndex);
@@ -883,7 +951,7 @@ public class PdfViewerController {
                 renderTasks.remove(pageIndex);
                 System.err.println("Error rendering page " + pageIndex + ": " + e.getMessage());
                 Platform.runLater(() -> {
-                    if (this.renderer == activeRenderer) {
+                    if (this.renderer == activeRenderer && this.renderGeneration.get() == generation) {
                         spinner.setVisible(false);
                         errLabel.setVisible(true);
                     }
@@ -916,6 +984,7 @@ public class PdfViewerController {
     }
 
     private void cancelAllTasks() {
+        renderGeneration.incrementAndGet();
         for (Future<?> task : renderTasks.values()) {
             // Use cancel(false) so we NEVER interrupt an active NIO FileChannel read inside PDFBox!
             task.cancel(false);

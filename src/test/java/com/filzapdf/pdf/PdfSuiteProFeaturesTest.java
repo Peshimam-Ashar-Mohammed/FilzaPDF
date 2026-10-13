@@ -9,11 +9,13 @@ import java.util.List;
 
 import javax.imageio.ImageIO;
 
+import org.apache.pdfbox.Loader;
 import org.apache.pdfbox.pdmodel.PDDocument;
 import org.apache.pdfbox.pdmodel.PDPage;
 import org.apache.pdfbox.pdmodel.PDPageContentStream;
 import org.apache.pdfbox.pdmodel.font.PDType1Font;
 import org.apache.pdfbox.pdmodel.font.Standard14Fonts.FontName;
+import org.apache.pdfbox.text.PDFTextStripper;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
@@ -36,7 +38,7 @@ class PdfSuiteProFeaturesTest {
     Path tempDir;
 
     @Test
-    void recognizesAndEditsTextAndFontInPdf() throws Exception {
+    void recognizesAndEditsTextAndFontInPdfAndScrubsOriginalContentStream() throws Exception {
         PdfTextEditorService editor = new PdfTextEditorService();
 
         try (PDDocument doc = new PDDocument()) {
@@ -71,8 +73,68 @@ class PdfSuiteProFeaturesTest {
             List<RecognizedTextBlock> afterBlocks = editor.recognizePageText(doc, 0);
             boolean foundUpdated = afterBlocks.stream().anyMatch(b -> b.getText().contains("Updated Custom Title"));
             boolean foundAdded = afterBlocks.stream().anyMatch(b -> b.getText().contains("Extra Added Line"));
+            boolean stillHasOriginal = afterBlocks.stream().anyMatch(b -> b.getText().contains("Original Header Title"));
             assertTrue(foundUpdated, "Should recognize updated text after replacement");
             assertTrue(foundAdded, "Should recognize newly added text on page");
+            assertFalse(stillHasOriginal, "Original text should be scrubbed from the page content stream");
+        }
+    }
+
+    @Test
+    void secureRedactionRemovesTextFromContentStreamAndCannotBeExtractedAfterSave() throws Exception {
+        PdfAnnotationPersistenceService persistence = new PdfAnnotationPersistenceService();
+        AnnotationManager manager = new AnnotationManager();
+        File savedPdf = tempDir.resolve("redacted_document.pdf").toFile();
+
+        try (PDDocument doc = new PDDocument()) {
+            PDPage page = new PDPage();
+            doc.addPage(page);
+
+            float pageHeight = page.getMediaBox().getHeight(); // 792 pt
+
+            // Write a public header near top (y_pdf = 700 -> topDownY ~ 74..92)
+            // and a secret SSN line below it (y_pdf = 600 -> topDownY ~ 174..192)
+            try (PDPageContentStream cs = new PDPageContentStream(doc, page)) {
+                cs.beginText();
+                cs.setFont(new PDType1Font(FontName.HELVETICA_BOLD), 14f);
+                cs.newLineAtOffset(72f, 700f);
+                cs.showText("Public Header: Annual Financial Summary");
+                cs.endText();
+
+                cs.beginText();
+                cs.setFont(new PDType1Font(FontName.HELVETICA), 14f);
+                cs.newLineAtOffset(72f, 600f);
+                cs.showText("CONFIDENTIAL-SSN-999-00-1234");
+                cs.endText();
+            }
+
+            // Create a REDACT annotation covering the secret line at y_pdf=600 (topDownY = 792 - 600 = 192)
+            float redactTopDownY = pageHeight - 620f; // 172 pt from top
+            Annotation redact = new Annotation();
+            redact.setType(AnnotationType.REDACT);
+            redact.setPageIndex(0);
+            redact.setX(60);
+            redact.setY(redactTopDownY);
+            redact.setWidth(320);
+            redact.setHeight(35);
+            redact.setColor("#000000");
+            manager.executeCommand(new AddAnnotationCommand(manager, redact));
+
+            persistence.burnAnnotationsIntoDocument(doc, manager);
+            doc.save(savedPdf);
+        }
+
+        // Reload saved PDF from disk and verify via PDFTextStripper that the redacted text is completely unrecoverable
+        try (PDDocument reloaded = Loader.loadPDF(savedPdf)) {
+            PDFTextStripper stripper = new PDFTextStripper();
+            String extractedText = stripper.getText(reloaded);
+
+            assertTrue(extractedText.contains("Public Header: Annual Financial Summary"),
+                    "Unredacted public text must remain intact");
+            assertFalse(extractedText.contains("CONFIDENTIAL-SSN"),
+                    "Redacted text must be scrubbed from the PDF content stream and unrecoverable");
+            assertFalse(extractedText.contains("999-00-1234"),
+                    "Redacted sensitive numbers must not be extractable after redaction");
         }
     }
 
@@ -128,21 +190,21 @@ class PdfSuiteProFeaturesTest {
         try (PDDocument pdf = creator.createPdfFromImages(List.of(img1, img2), "A4", false, 20f)) {
             assertEquals(2, pdf.getNumberOfPages());
 
-            // Verify PdfPageRenderer renders both image pages cleanly
+            // Verify PdfPageRenderer renders both image pages cleanly at crisp HiDPI (150 DPI)
             com.filzapdf.renderer.PdfPageRenderer pageRenderer = new com.filzapdf.renderer.PdfPageRenderer(pdf);
-            BufferedImage rendered0 = pageRenderer.renderPage(0, 72f);
-            BufferedImage rendered1 = pageRenderer.renderPage(1, 72f);
+            BufferedImage rendered0 = pageRenderer.renderPage(0, 150f);
+            BufferedImage rendered1 = pageRenderer.renderPage(1, 150f);
             assertNotNull(rendered0);
             assertNotNull(rendered1);
-            assertTrue(rendered0.getWidth() > 0 && rendered0.getHeight() > 0);
-            assertTrue(rendered1.getWidth() > 0 && rendered1.getHeight() > 0);
+            assertTrue(rendered0.getWidth() > 1000 && rendered0.getHeight() > 1000);
+            assertTrue(rendered1.getWidth() > 1000 && rendered1.getHeight() > 1000);
 
             // Append a 3rd image page into the already-open PDDocument
             int appended = creator.appendImagesAsPages(pdf, List.of(img3), "FIT_IMAGE", false, 10f);
             assertEquals(1, appended);
             assertEquals(3, pdf.getNumberOfPages());
 
-            BufferedImage rendered2 = pageRenderer.renderPage(2, 72f);
+            BufferedImage rendered2 = pageRenderer.renderPage(2, 150f);
             assertNotNull(rendered2);
             assertTrue(rendered2.getWidth() > 0 && rendered2.getHeight() > 0);
         }

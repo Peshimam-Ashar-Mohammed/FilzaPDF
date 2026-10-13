@@ -18,22 +18,42 @@ import com.filzapdf.pdf.PdfTextEditorService;
 /**
  * Persists visual annotations (Highlights, Underlines, Strikethroughs, Freehand Ink,
  * Rectangles, Redactions, and Sticky Notes) directly into PDF pages on save.
+ * For {@link AnnotationType#REDACT}, first scrubs matching text tokens from the page's
+ * underlying content stream before painting the opaque redaction block.
  */
 public class PdfAnnotationPersistenceService {
+
+    private final PdfTextEditorService textEditorService = new PdfTextEditorService();
 
     public void burnAnnotationsIntoDocument(PDDocument doc, AnnotationManager manager) throws IOException {
         if (doc == null || manager == null) return;
 
-        for (int p = 0; p < doc.getNumberOfPages(); p++) {
-            List<Annotation> list = manager.getAnnotationsForPage(p);
-            if (list == null || list.isEmpty()) continue;
+        synchronized (doc) {
+            for (int p = 0; p < doc.getNumberOfPages(); p++) {
+                List<Annotation> list = manager.getAnnotationsForPage(p);
+                if (list == null || list.isEmpty()) continue;
 
-            PDPage page = doc.getPage(p);
-            float pageHeight = page.getMediaBox().getHeight();
-
-            try (PDPageContentStream cs = new PDPageContentStream(doc, page, AppendMode.APPEND, true, true)) {
+                // First pass: scrub content-stream text tokens under any REDACT regions on this page
                 for (Annotation a : list) {
-                    renderAnnotationToStream(cs, a, pageHeight);
+                    if (a.getType() == AnnotationType.REDACT) {
+                        textEditorService.redactTextInRegion(
+                                doc,
+                                p,
+                                (float) a.getX(),
+                                (float) a.getY(),
+                                (float) a.getWidth(),
+                                (float) a.getHeight()
+                        );
+                    }
+                }
+
+                PDPage page = doc.getPage(p);
+                float pageHeight = page.getMediaBox().getHeight();
+
+                try (PDPageContentStream cs = new PDPageContentStream(doc, page, AppendMode.APPEND, true, true)) {
+                    for (Annotation a : list) {
+                        renderAnnotationToStream(cs, a, pageHeight);
+                    }
                 }
             }
         }

@@ -1,11 +1,19 @@
 package com.filzapdf.renderer;
 
+import java.awt.RenderingHints;
 import java.awt.image.BufferedImage;
 import java.io.IOException;
 
 import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.rendering.ImageType;
 import org.apache.pdfbox.rendering.PDFRenderer;
+import org.apache.pdfbox.rendering.RenderDestination;
 
+/**
+ * Thread-safe PDF page renderer backed by Apache PDFBox {@link PDFRenderer},
+ * configured with high-quality anti-aliasing and bicubic interpolation hints
+ * for sharp typography and vector graphics.
+ */
 public class PdfPageRenderer {
 
     private final PDDocument document;
@@ -18,6 +26,15 @@ public class PdfPageRenderer {
 
         this.document = document;
         this.pdfRenderer = new PDFRenderer(document);
+        this.pdfRenderer.setSubsamplingAllowed(false);
+
+        RenderingHints hints = new RenderingHints(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON);
+        hints.put(RenderingHints.KEY_TEXT_ANTIALIASING, RenderingHints.VALUE_TEXT_ANTIALIAS_ON);
+        hints.put(RenderingHints.KEY_RENDERING, RenderingHints.VALUE_RENDER_QUALITY);
+        hints.put(RenderingHints.KEY_INTERPOLATION, RenderingHints.VALUE_INTERPOLATION_BICUBIC);
+        hints.put(RenderingHints.KEY_FRACTIONALMETRICS, RenderingHints.VALUE_FRACTIONALMETRICS_ON);
+        hints.put(RenderingHints.KEY_STROKE_CONTROL, RenderingHints.VALUE_STROKE_PURE);
+        this.pdfRenderer.setRenderingHints(hints);
     }
 
     /**
@@ -37,7 +54,8 @@ public class PdfPageRenderer {
         synchronized (document) {
             validatePageIndex(pageIndex);
             try {
-                return pdfRenderer.renderImageWithDPI(pageIndex, dpi);
+                float scale = dpi / 72f;
+                return pdfRenderer.renderImage(pageIndex, scale, ImageType.RGB, RenderDestination.VIEW);
             } catch (IOException | IllegalArgumentException e) {
                 throw new PdfPageRenderingException(
                         "Failed to render PDF page " + pageIndex,
